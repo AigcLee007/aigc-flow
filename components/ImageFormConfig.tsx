@@ -1,0 +1,410 @@
+import React, { useEffect, useMemo, useRef } from 'react';
+import { useSelectionStore } from '../src/store/selectionStore';
+import DropUpSelect from './DropUpSelect';
+import ModelSelector from './ModelSelector';
+import ImageModelIcon from './ImageModelIcon';
+import CoinIcon from './CoinIcon';
+import {
+  DEFAULT_IMAGE_MODEL_ID,
+  getDefaultImageSizeForModel,
+  getImageModelById,
+  getImageModelExtraAspectRatios,
+  getImageModelOptions,
+  getImageModelSizeOptions,
+  getNormalizedImageSizeForModel,
+  shouldShowImageSizeSelector,
+} from '../src/config/imageModels';
+import {
+  canUseDirectUserApiKeyForImageModel,
+  getLowestCostImageRouteForModel,
+  getImageRoutePointCost,
+  getImageRouteOptions,
+  getImageRoutesByModelFamily,
+  getSelectedImageRoute,
+} from '../src/config/imageRoutes';
+import { useImageRouteCatalog } from '../src/hooks/useImageRouteCatalog';
+import { useImageModelCatalog } from '../src/hooks/useImageModelCatalog';
+
+const BASE_RATIO_OPTIONS = [
+  { label: '智能', value: 'Smart' },
+  { label: '自定义', value: 'Custom' },
+  { label: '1:1', value: '1:1' },
+  { label: '16:9', value: '16:9' },
+  { label: '9:16', value: '9:16' },
+  { label: '4:3', value: '4:3' },
+  { label: '3:4', value: '3:4' },
+  { label: '3:2', value: '3:2' },
+  { label: '2:3', value: '2:3' },
+  { label: '21:9', value: '21:9' },
+  { label: '9:21', value: '9:21' },
+  { label: '5:4', value: '5:4' },
+];
+
+interface ImageFormConfigProps {
+  restrictToDirectKeyCompatible?: boolean;
+}
+
+export const ImageFormConfig: React.FC<ImageFormConfigProps> = ({
+  restrictToDirectKeyCompatible = false,
+}) => {
+  useImageRouteCatalog();
+  useImageModelCatalog();
+
+  const {
+    aspectRatio,
+    setAspectRatio,
+    customRatio,
+    setCustomRatio,
+    imageSize,
+    setImageSize,
+    quantity,
+    setQuantity,
+    imageModel,
+    setImageModel,
+    imageLine,
+    setImageLine,
+    gptImageQuality,
+    setGptImageQuality,
+    gptImageOutputFormat,
+    setGptImageOutputFormat,
+    gptImageOutputCompression,
+    setGptImageOutputCompression,
+    gptImageModeration,
+    setGptImageModeration,
+  } = useSelectionStore();
+  const lastAutoPricedModelRef = useRef<string | null>(null);
+
+  const visibleImageModels = useMemo(
+    () =>
+      getImageModelOptions().filter((model) =>
+        model.isActive !== false &&
+        (restrictToDirectKeyCompatible ? canUseDirectUserApiKeyForImageModel(model.id) : true),
+      ),
+    [restrictToDirectKeyCompatible],
+  );
+
+  const currentModel =
+    visibleImageModels.find((model) => model.id === imageModel) ||
+    visibleImageModels[0] ||
+    getImageModelById(imageModel);
+
+  const availableRoutes = useMemo(
+    () =>
+      getImageRoutesByModelFamily(currentModel.routeFamily).filter((route) => {
+        if (route.isActive === false) return false;
+        return restrictToDirectKeyCompatible ? route.allowUserApiKeyWithoutLogin === true : true;
+      }),
+    [currentModel.routeFamily, restrictToDirectKeyCompatible],
+  );
+
+  const imageRouteOptions = useMemo(
+    () =>
+      getImageRouteOptions(currentModel.id, {
+        preferCompatibleFirst: restrictToDirectKeyCompatible,
+        recommendCompatible: restrictToDirectKeyCompatible,
+        directKeyOnly: restrictToDirectKeyCompatible,
+      }),
+    [currentModel.id, restrictToDirectKeyCompatible],
+  );
+
+  const rawSizeOptions = getImageModelSizeOptions(currentModel.id);
+  const sizeOptions =
+    currentModel.id === 'gpt-image-2' && !rawSizeOptions.includes('auto')
+      ? ['auto', ...rawSizeOptions]
+      : rawSizeOptions;
+  const normalizedSize = getNormalizedImageSizeForModel(currentModel.id, imageSize);
+  const showLineSelector = availableRoutes.length > 1;
+  const showSizeSelector = shouldShowImageSizeSelector(currentModel.id);
+  const isGptImage2 = currentModel.id === 'gpt-image-2';
+  const selectedRoute = getSelectedImageRoute(currentModel.id, imageLine);
+  const currentUnitCost = getImageRoutePointCost(selectedRoute, normalizedSize);
+  const currentTotalCost = currentUnitCost * Math.max(1, Number(quantity || 1));
+
+  const commitGptCompression = (value: string) => {
+    const trimmed = value.trim();
+    if (!trimmed) {
+      setGptImageOutputCompression(null);
+      return;
+    }
+    const parsed = Number(trimmed);
+    if (!Number.isFinite(parsed)) return;
+    setGptImageOutputCompression(Math.max(0, Math.min(100, Math.round(parsed))));
+  };
+
+  useEffect(() => {
+    if (visibleImageModels.length === 0) return;
+    if (visibleImageModels.some((model) => model.id === imageModel)) return;
+    setImageModel(visibleImageModels[0]?.id || DEFAULT_IMAGE_MODEL_ID());
+  }, [imageModel, setImageModel, visibleImageModels]);
+
+  useEffect(() => {
+    if (normalizedSize === imageSize) return;
+    setImageSize(normalizedSize || getDefaultImageSizeForModel(currentModel.id));
+  }, [currentModel.id, imageSize, normalizedSize, setImageSize]);
+
+  useEffect(() => {
+    if (availableRoutes.length === 0) return;
+    if (availableRoutes.some((route) => route.line === imageLine)) return;
+    const cheapestRoute = getLowestCostImageRouteForModel(currentModel.id, normalizedSize, {
+      directKeyOnly: restrictToDirectKeyCompatible,
+    });
+    setImageLine((cheapestRoute || availableRoutes[0]).line);
+  }, [
+    availableRoutes,
+    currentModel.id,
+    imageLine,
+    normalizedSize,
+    restrictToDirectKeyCompatible,
+    setImageLine,
+  ]);
+
+  useEffect(() => {
+    if (availableRoutes.length === 0) return;
+    if (lastAutoPricedModelRef.current === currentModel.id) return;
+    lastAutoPricedModelRef.current = currentModel.id;
+    const cheapestRoute = getLowestCostImageRouteForModel(currentModel.id, normalizedSize, {
+      directKeyOnly: restrictToDirectKeyCompatible,
+    });
+    if (cheapestRoute && cheapestRoute.line !== imageLine) {
+      setImageLine(cheapestRoute.line);
+    }
+  }, [
+    availableRoutes.length,
+    currentModel.id,
+    imageLine,
+    normalizedSize,
+    restrictToDirectKeyCompatible,
+    setImageLine,
+  ]);
+
+  const ratioOptions = useMemo(() => {
+    const extraRatios = getImageModelExtraAspectRatios(currentModel.id).map((value) => ({
+      label: value,
+      value,
+    }));
+    const includeCustom = currentModel.supportsCustomRatio !== false;
+    const merged = includeCustom
+      ? [...BASE_RATIO_OPTIONS, ...extraRatios]
+      : [
+          ...BASE_RATIO_OPTIONS.filter((option) => option.value !== 'Custom'),
+          ...extraRatios,
+        ];
+
+    return merged.filter(
+      (option, index) =>
+        merged.findIndex((item) => item.value === option.value) === index,
+    );
+  }, [currentModel.id, currentModel.supportsCustomRatio]);
+
+  const gridClass =
+    currentModel.panelLayout === 'nano-banana'
+      ? 'grid-cols-[1.15fr_1fr_1.15fr_0.9fr] gap-1.5'
+      : currentModel.panelLayout === 'compact'
+        ? 'grid-cols-2 gap-2'
+        : 'grid-cols-[1.15fr_1fr_1fr] gap-2';
+
+  const modelOptions = useMemo(
+    () =>
+      visibleImageModels.map((model) => {
+        const modelSize = getNormalizedImageSizeForModel(model.id, imageSize);
+        const cheapestRoute = getLowestCostImageRouteForModel(model.id, modelSize, {
+          directKeyOnly: restrictToDirectKeyCompatible,
+        });
+        const displayCost = cheapestRoute
+          ? getImageRoutePointCost(cheapestRoute, modelSize)
+          : model.selectorCost;
+
+        return {
+          value: model.id,
+          label: model.label,
+          cost: displayCost,
+          icon: <ImageModelIcon iconKind={model.iconKind} variant="selector" />,
+        };
+      }),
+    [imageSize, restrictToDirectKeyCompatible, visibleImageModels],
+  );
+
+  if (visibleImageModels.length === 0) {
+    return (
+      <div className="rounded-xl border border-white/10 bg-white/[0.03] px-4 py-3 text-xs leading-6 text-gray-400">
+        当前没有可用于直连 API Key 的图像模型。
+      </div>
+    );
+  }
+
+  return (
+    <>
+      <div className="mb-2">
+        <label className="mb-1 block text-[10px] text-gray-500">图像模型</label>
+        <ModelSelector
+          dropUp
+          value={currentModel.id}
+          onChange={(value) => {
+            setImageModel(value);
+            const nextSize = getNormalizedImageSizeForModel(value, imageSize);
+            const cheapestRoute = getLowestCostImageRouteForModel(value, nextSize, {
+              directKeyOnly: restrictToDirectKeyCompatible,
+            });
+            if (cheapestRoute) {
+              setImageLine(cheapestRoute.line);
+            }
+          }}
+          options={modelOptions}
+        />
+      </div>
+
+      <div className={`grid ${gridClass}`}>
+        <div>
+          <label className="mb-1 block text-[10px] text-gray-500">画面比例</label>
+          <DropUpSelect
+            value={aspectRatio}
+            onChange={(value) => setAspectRatio(value)}
+            options={ratioOptions}
+            showRectMarker
+          />
+          {aspectRatio === 'Custom' && currentModel.supportsCustomRatio !== false && (
+            <div className="mt-1 flex items-center gap-1">
+              <input
+                type="text"
+                value={customRatio}
+                onChange={(event) => setCustomRatio(event.target.value)}
+                placeholder="16:9"
+                className="w-full rounded border border-gray-700 bg-gray-900 px-1 py-1 text-[10px] text-white"
+              />
+            </div>
+          )}
+        </div>
+
+        {showSizeSelector && (
+          <div>
+            <label className="mb-1 block text-[10px] text-gray-500">画质尺寸</label>
+            <DropUpSelect
+              value={normalizedSize}
+              onChange={(value) => setImageSize(value)}
+              options={sizeOptions.map((value) => ({
+                value,
+                label: value.toLowerCase() === 'auto' ? '自动' : value.toUpperCase(),
+              }))}
+            />
+          </div>
+        )}
+
+        {showLineSelector && (
+          <div>
+            <label className="mb-1 block text-[10px] text-gray-500">线路</label>
+            <DropUpSelect
+              value={imageLine}
+              onChange={(value) => setImageLine(value)}
+              options={imageRouteOptions}
+            />
+            {restrictToDirectKeyCompatible && (
+              <div className="mt-1 text-[10px] leading-4 text-cyan-300">
+                此处仅展示支持直连 API Key 的线路。
+              </div>
+            )}
+          </div>
+        )}
+
+        {isGptImage2 && (
+          <div>
+            <label className="mb-1 block text-[10px] text-gray-500">质量</label>
+            <DropUpSelect
+              value={gptImageQuality}
+              onChange={(value) =>
+                setGptImageQuality(value as 'auto' | 'low' | 'medium' | 'high')
+              }
+              options={[
+                { value: 'auto', label: '自动' },
+                { value: 'low', label: '低' },
+                { value: 'medium', label: '中' },
+                { value: 'high', label: '高' },
+              ]}
+            />
+          </div>
+        )}
+
+        {isGptImage2 && (
+          <div>
+            <label className="mb-1 block text-[10px] text-gray-500">格式</label>
+            <DropUpSelect
+              value={gptImageOutputFormat}
+              onChange={(value) =>
+                setGptImageOutputFormat(value as 'png' | 'jpeg' | 'webp')
+              }
+              options={[
+                { value: 'png', label: 'PNG' },
+                { value: 'jpeg', label: 'JPEG' },
+                { value: 'webp', label: 'WebP' },
+              ]}
+            />
+          </div>
+        )}
+
+        {isGptImage2 && (
+          <div>
+            <label className="mb-1 block text-[10px] text-gray-500">压缩率</label>
+            <input
+              type="number"
+              min={0}
+              max={100}
+              disabled={gptImageOutputFormat === 'png'}
+              value={gptImageOutputCompression ?? ''}
+              onChange={(event) => commitGptCompression(event.target.value)}
+              placeholder="0-100"
+              className="w-full rounded border border-gray-700 bg-gray-900 px-2 py-2 text-xs text-white disabled:cursor-not-allowed disabled:opacity-45"
+            />
+          </div>
+        )}
+
+        {isGptImage2 && (
+          <div>
+            <label className="mb-1 block text-[10px] text-gray-500">审核强度</label>
+            <DropUpSelect
+              value={gptImageModeration}
+              onChange={(value) => setGptImageModeration(value as 'auto' | 'low')}
+              options={[
+                { value: 'auto', label: '自动' },
+                { value: 'low', label: '低' },
+              ]}
+            />
+          </div>
+        )}
+
+        <div>
+          <label className="mb-1 block text-[10px] text-gray-500">数量</label>
+          <DropUpSelect
+            value={String(quantity)}
+            onChange={(value) => setQuantity(parseInt(value, 10))}
+            options={[
+              { value: '1', label: '1' },
+              { value: '2', label: '2' },
+              { value: '4', label: '4' },
+              { value: '8', label: '8' },
+              { value: '16', label: '16' },
+            ]}
+          />
+        </div>
+      </div>
+
+      <div className="mt-3 rounded-xl border border-yellow-400/[0.18] bg-yellow-400/[0.06] px-3 py-2.5">
+        <div className="flex items-center justify-between gap-3">
+          <div className="min-w-0">
+            <div className="text-[10px] text-gray-400">当前配置消耗</div>
+            <div className="mt-0.5 truncate text-[11px] text-gray-500">
+              {currentModel.label} / {selectedRoute.label} / {normalizedSize.toUpperCase()} / {quantity} 张
+            </div>
+          </div>
+          <div className="flex shrink-0 items-center gap-1.5 rounded-lg border border-yellow-400/20 bg-black/20 px-2.5 py-1.5 text-sm font-semibold text-yellow-300">
+            <CoinIcon size={15} />
+            {currentTotalCost.toFixed(1)}
+          </div>
+        </div>
+        <div className="mt-2 text-[10px] leading-4 text-gray-500">
+          单张 {currentUnitCost.toFixed(1)} 点，最终按数量自动合计。
+        </div>
+      </div>
+    </>
+  );
+};
+
+export default ImageFormConfig;

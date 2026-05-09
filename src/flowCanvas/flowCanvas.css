@@ -1,0 +1,134 @@
+﻿/* Flow Canvas React Flow overrides */
+
+html.flow-viewport-lock,
+body.flow-viewport-lock {
+  width: 100%;
+  height: 100%;
+  overflow: hidden !important;
+  overscroll-behavior: none !important;
+  touch-action: none;
+}
+
+body.flow-viewport-lock {
+  position: fixed;
+  inset: 0;
+}
+
+.react-flow__node {
+  background: transparent !important;
+  border: none !important;
+  border-radius: 0 !important;
+  padding: 0 !important;
+  box-shadow: none !important;
+  font-size: inherit !important;
+  color: inherit !important;
+}
+
+.react-flow__node.selected {
+  box-shadow: none !important;
+  border: none !important;
+  outline: none !important;
+}
+
+.react-flow__node-resizer__line {
+  display: none !important;
+}
+
+.react-flow__edge-path {
+  stroke-linecap: round;
+}
+
+.react-flow__edge.selected .react-flow__edge-path {
+  stroke: #f8fafc !important;
+  stroke-width: 2.5 !important;
+  filter: drop-shadow(0 0 7px rgba(255, 255, 255, 0.38));
+}
+
+.react-flow__edge:hover .react-flow__edge-path {
+  stroke-width: 2.3 !important;
+  filter: drop-shadow(0 0 6px rgba(125, 211, 252, 0.28));
+}
+
+.flow-canvas-dragging .react-flow__edge:hover .react-flow__edge-path,
+.flow-canvas-dragging .react-flow__edge.selected .react-flow__edge-path {
+  filter: none !important;
+}
+
+.flow-canvas-dragging .react-flow__edge-path {
+  transition: none !important;
+  filter: none !important;
+}
+
+.flow-node-drag-ghost {
+  contain: layout paint style;
+  will-change: transform;
+}
+
+.flow-canvas-dragging .flow-node-drag-ghost {
+  pointer-events: none;
+}
+
+.flow-canvas-dragging .flow-node-drag-ghost * {
+  transition: none !important;
+  animation: none !important;
+}
+
+.flow-canvas-dragging .react-flow__node:not(.flow-node-drag-ghost) {
+  pointer-events: none;
+}
+
+.react-flow__connection-path {
+  stroke: #38bdf8 !important;
+  stroke-width: 2 !important;
+  stroke-dasharray: 6 3;
+}
+
+.react-flow__selection {
+  background: rgba(56, 189, 248, 0.08) !important;
+  border: 1px solid rgba(56, 189, 248, 0.42) !important;
+  border-radius: 6px !important;
+}
+
+.react-flow__minimap {
+  background: rgba(20, 20, 28, 0.92) !important;
+}
+
+input[type='range'] {
+  -webkit-appearance: none;
+  appearance: none;
+}
+
+input[type='range']::-webkit-slider-runnable-track {
+  height: 7px;
+  border-radius: 999px;
+}
+
+input[type='range']::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 18px;
+  height: 18px;
+  margin-top: -5.5px;
+  border-radius: 50%;
+  background: #fff;
+  border: 1px solid rgba(0, 0, 0, 0.16);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.32);
+}
+
+input[type='range']::-moz-range-thumb {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: #fff;
+  border: 1px solid rgba(0, 0, 0, 0.16);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.32);
+}
+
+*::-webkit-scrollbar {
+  display: none !important;
+}
+
+* {
+  -ms-overflow-style: none !important;
+  scrollbar-width: none !important;
+}

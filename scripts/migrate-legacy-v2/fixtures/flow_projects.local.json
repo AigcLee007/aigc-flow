@@ -1,0 +1,65 @@
+[
+  {
+    "id": "legacy-project-valid",
+    "userId": "user_demo",
+    "title": "Legacy Valid Flow",
+    "nodes": [
+      {
+        "id": "node-input",
+        "type": "input",
+        "data": {
+          "label": "Input"
+        }
+      },
+      {
+        "id": "node-output",
+        "type": "output",
+        "data": {
+          "label": "Output"
+        }
+      }
+    ],
+    "edges": [
+      {
+        "id": "edge-1",
+        "source": "node-input",
+        "target": "node-output"
+      }
+    ],
+    "viewport": {
+      "x": 0,
+      "y": 0,
+      "zoom": 1
+    },
+    "version": 1,
+    "createdAt": "2026-05-10T10:00:00.000Z",
+    "updatedAt": "2026-05-11T10:00:00.000Z"
+  },
+  {
+    "id": "legacy-project-invalid",
+    "userId": "user_demo",
+    "title": "Legacy Invalid Flow",
+    "nodes": [
+      {
+        "id": "node-input",
+        "type": "input",
+        "data": {}
+      }
+    ],
+    "edges": [
+      {
+        "id": "broken-edge",
+        "source": "node-input",
+        "target": "missing-node"
+      }
+    ],
+    "viewport": {
+      "x": 0,
+      "y": 0,
+      "zoom": 1
+    },
+    "version": 1,
+    "createdAt": "2026-05-12T10:00:00.000Z",
+    "updatedAt": "2026-05-12T10:00:00.000Z"
+  }
+]

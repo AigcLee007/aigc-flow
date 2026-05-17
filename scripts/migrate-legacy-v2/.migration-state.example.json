@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "updatedAt": "2026-05-17T00:00:00.000Z",
+  "mappings": {
+    "projects": {
+      "legacy-project-1": "11111111-1111-5111-8111-111111111111"
+    },
+    "flows": {
+      "flow:legacy-project-1": "22222222-2222-5222-8222-222222222222"
+    },
+    "flowVersions": {
+      "flow:legacy-project-1:checksum": "33333333-3333-5333-8333-333333333333"
+    },
+    "assets": {
+      "2026/05/17/demo/sample.png": "44444444-4444-5444-8444-444444444444"
+    },
+    "users": {
+      "user_demo": "55555555-5555-5555-8555-555555555555"
+    }
+  },
+  "completed": {
+    "projects": {
+      "legacy-project-1": "2026-05-17T00:00:00.000Z"
+    },
+    "assets": {
+      "2026/05/17/demo/sample.png": "2026-05-17T00:00:00.000Z"
+    }
+  }
+}

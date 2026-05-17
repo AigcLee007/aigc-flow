@@ -27,6 +27,8 @@ storage/
 !packages/storage/**
 packages/storage/dist/
 packages/storage/node_modules/
+scripts/migrate-legacy-v2/.migration-state.json
+scripts/migrate-legacy-v2/reports/*.json
 scratch/
 runtime-logs/
 .tmp-*

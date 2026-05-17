@@ -17,6 +17,8 @@
     "dev:api": "npm run dev --workspace @aigc-flow/api",
     "dev:worker": "npm run dev --workspace @aigc-flow/worker",
     "db:migrate": "npm run migrate --workspace @aigc-flow/db",
+    "migrate:legacy:v2": "tsx scripts/migrate-legacy-v2/migrate.ts",
+    "migrate:legacy:v2:dry-run": "tsx scripts/migrate-legacy-v2/migrate.ts --dry-run",
     "migrate:mysql": "node scripts/migrate-json-to-mysql.cjs",
     "test": "vitest --run",
     "test:watch": "vitest"

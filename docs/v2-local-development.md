@@ -285,6 +285,84 @@ Current PR-14 limits:
 - if the current canvas does not have a stable backend `flowId` binding, the
   frontend refuses the production run and asks for a bound published flow first
 
+## PR-15 legacy migration scripts
+
+PR-15 adds the first reusable legacy-to-v2 migration script framework:
+
+- `scripts/migrate-legacy-v2/migrate.ts`
+- `scripts/migrate-legacy-v2/legacy-readers.ts`
+- `scripts/migrate-legacy-v2/v2-writers.ts`
+- `scripts/migrate-legacy-v2/asset-migrator.ts`
+- `scripts/migrate-legacy-v2/checkpoint-store.ts`
+- `scripts/migrate-legacy-v2/mapping.ts`
+- `scripts/migrate-legacy-v2/README.md`
+
+Current PR-15 behavior:
+
+- legacy `flow_projects` style canvas data can be read from:
+  - JSON fallback files such as `flow_projects.local.json`
+  - legacy MySQL when the old `MYSQL_*` environment is configured
+- each legacy flow-project record is treated as:
+  - one migrated v2 `projects` row
+  - one migrated v2 `flows` row
+  - one migrated v2 `flow_versions` row when the graph compiles successfully
+- migrated graphs are validated and compiled with `workflow-core`
+- invalid graphs are reported as migration errors and do not crash the entire batch
+- local generated assets under the legacy `storage/generated/line4/original` tree can be migrated into:
+  - S3-compatible object storage
+  - v2 `assets` metadata rows
+- auth migration is metadata-only in this phase:
+  - user metadata is inventoried
+  - passwords are not migrated
+  - sessions are not migrated
+- billing migration is summary-only in this phase:
+  - legacy billing counts and balances can be reported
+  - no v2 `billing_ledger` rows are written by PR-15
+
+How to use the PR-15 migration scripts:
+
+1. Start PostgreSQL, Redis, and MinIO when you plan to do a real migration run.
+2. Run a dry-run first:
+
+```bash
+npm run migrate:legacy:v2:dry-run -- --tenant-id 00000000-0000-0000-0000-000000000001 --legacy-source ./scripts/migrate-legacy-v2/fixtures --report ./scripts/migrate-legacy-v2/reports/dry-run.json
+```
+
+3. Review the generated report for:
+   - planned project / flow / asset counts
+   - graph compile errors
+   - missing asset warnings
+   - auth and billing manual follow-up notes
+4. For a real migration, run:
+
+```bash
+npm run migrate:legacy:v2 -- --tenant-id <tenant-id> --user-id <existing-v2-user-id> --legacy-source ./storage --resume --report ./scripts/migrate-legacy-v2/reports/migration.json
+```
+
+Checkpoint and resume notes:
+
+- state is stored in `scripts/migrate-legacy-v2/.migration-state.json`
+- `--resume` skips already completed project and asset items
+- reports can be written to `scripts/migrate-legacy-v2/reports/*.json`
+- the checkpoint file and generated reports are gitignored
+
+Asset migration notes:
+
+- migrated assets are uploaded into S3-compatible object storage
+- the database stores metadata plus `object_key`, not file content
+- migrated asset URLs are not treated as permanent public URLs
+- missing legacy asset files are reported as warnings instead of failing the whole batch
+
+Current PR-15 limits:
+
+- PR-15 does not delete or rewire legacy runtime code
+- PR-15 does not change `server.cjs`
+- PR-15 does not migrate plaintext passwords
+- PR-15 does not migrate legacy sessions
+- PR-15 does not write billing reconciliation rows into `billing_ledger`
+- PR-15 does not remove legacy MySQL / JSON / local-storage paths
+- PR-17 remains the phase for legacy runtime removal
+
 ## Configure `DATABASE_URL`
 
 Copy `.env.v2.example` or export the variable directly before running

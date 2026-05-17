@@ -14,6 +14,13 @@ import { nanoid } from 'nanoid';
 import type { FlowEdgeData, FlowNodeData, FlowNodeKind } from '../types';
 import { createFlowNode, duplicateFlowNode } from '../utils/nodeFactory';
 import { canConnectFlowNodes, canCreateNodeFromSource } from '../rules/connectionRules';
+import type {
+  FlowRuntimeNodeOutput,
+} from '../types';
+import type {
+  V2WorkflowRunEventView,
+  V2WorkflowRunStatus,
+} from '../../services/v2WorkflowRunsApi';
 
 type FlowNode = Node<FlowNodeData>;
 type FlowEdge = Edge<FlowEdgeData>;
@@ -63,6 +70,9 @@ export interface FlowGraphIndex {
 }
 
 interface FlowProject {
+  backendCurrentVersionId?: string | null;
+  backendFlowId?: string | null;
+  backendProjectId?: string | null;
   id: string;
   title: string;
   nodes: FlowNode[];
@@ -73,6 +83,9 @@ interface FlowProject {
 }
 
 interface FlowCanvasState {
+  backendCurrentVersionId: string | null;
+  backendFlowId: string | null;
+  backendProjectId: string | null;
   projectId: string;
   projectTitle: string;
   version: number;
@@ -91,6 +104,15 @@ interface FlowCanvasState {
   contextMenu: { x: number; y: number; nodeId?: string } | null;
   activeImageTool: ActiveImageToolState | null;
   isNodeDragging: boolean;
+  currentRunId: string | null;
+  isRunningBackendWorkflow: boolean;
+  nodeOutputByNodeId: Record<string, FlowRuntimeNodeOutput>;
+  nodeRunIdByNodeId: Record<string, string>;
+  nodeRunStatusByNodeId: Record<string, V2WorkflowRunStatus>;
+  nodeIdByNodeRunId: Record<string, string>;
+  runError: string | null;
+  runEvents: V2WorkflowRunEventView[];
+  runStatus: V2WorkflowRunStatus | null;
 
   onNodesChange: OnNodesChange<FlowNode>;
   onEdgesChange: OnEdgesChange<FlowEdge>;
@@ -131,6 +153,11 @@ interface FlowCanvasState {
   redo: () => void;
 
   setProjectTitle: (title: string) => void;
+  setBackendFlowBinding: (input: {
+    backendCurrentVersionId?: string | null;
+    backendFlowId?: string | null;
+    backendProjectId?: string | null;
+  }) => void;
   loadProject: (project: FlowProject) => void;
   getProjectSnapshot: () => FlowProject;
   newProject: () => void;
@@ -144,6 +171,7 @@ interface FlowCanvasState {
   closeContextMenu: () => void;
   openImageTool: (nodeId: string, tool: ActiveImageToolType) => void;
   closeImageTool: () => void;
+  resetBackendRunState: () => void;
 }
 
 const MAX_HISTORY = 50;
@@ -248,6 +276,9 @@ const shouldRecountSelectionForNodeChanges = (changes: Parameters<OnNodesChange<
   changes.some((change) => change.type === 'select' || change.type === 'add' || change.type === 'remove');
 
 export const useFlowCanvasStore = create<FlowCanvasState>((set, get) => ({
+  backendCurrentVersionId: null,
+  backendFlowId: null,
+  backendProjectId: null,
   projectId: nanoid(12),
   projectTitle: '未命名项目',
   version: 1,
@@ -266,6 +297,15 @@ export const useFlowCanvasStore = create<FlowCanvasState>((set, get) => ({
   contextMenu: null,
   activeImageTool: null,
   isNodeDragging: false,
+  currentRunId: null,
+  isRunningBackendWorkflow: false,
+  nodeOutputByNodeId: {},
+  nodeRunIdByNodeId: {},
+  nodeRunStatusByNodeId: {},
+  nodeIdByNodeRunId: {},
+  runError: null,
+  runEvents: [],
+  runStatus: null,
 
   onNodesChange: (changes) => {
     const dirty = shouldMarkNodeChangesDirty(changes);
@@ -733,10 +773,29 @@ export const useFlowCanvasStore = create<FlowCanvasState>((set, get) => ({
 
   setProjectTitle: (title) => set({ projectTitle: title, isDirty: true }),
 
+  setBackendFlowBinding: (input) =>
+    set((state) => ({
+      backendCurrentVersionId:
+        input.backendCurrentVersionId !== undefined
+          ? input.backendCurrentVersionId
+          : state.backendCurrentVersionId,
+      backendFlowId:
+        input.backendFlowId !== undefined
+          ? input.backendFlowId
+          : state.backendFlowId,
+      backendProjectId:
+        input.backendProjectId !== undefined
+          ? input.backendProjectId
+          : state.backendProjectId,
+    })),
+
   loadProject: (project) => {
     const nodes = resetStaleTextGenerationNodes(project.nodes || []);
     const edges = project.edges || [];
     set({
+      backendCurrentVersionId: project.backendCurrentVersionId ?? null,
+      backendFlowId: project.backendFlowId ?? null,
+      backendProjectId: project.backendProjectId ?? null,
       projectId: project.id,
       projectTitle: project.title || '未命名项目',
       nodes,
@@ -750,13 +809,35 @@ export const useFlowCanvasStore = create<FlowCanvasState>((set, get) => ({
       historyIndex: -1,
       contextMenu: null,
       activeImageTool: null,
+      currentRunId: null,
       isNodeDragging: false,
+      isRunningBackendWorkflow: false,
+      nodeOutputByNodeId: {},
+      nodeRunIdByNodeId: {},
+      nodeRunStatusByNodeId: {},
+      nodeIdByNodeRunId: {},
+      runError: null,
+      runEvents: [],
+      runStatus: null,
     });
   },
 
   getProjectSnapshot: () => {
-    const { projectId, projectTitle, nodes, edges, viewport, version } = get();
+    const {
+      backendCurrentVersionId,
+      backendFlowId,
+      backendProjectId,
+      projectId,
+      projectTitle,
+      nodes,
+      edges,
+      viewport,
+      version,
+    } = get();
     return {
+      backendCurrentVersionId,
+      backendFlowId,
+      backendProjectId,
       id: projectId,
       title: projectTitle,
       nodes,
@@ -769,6 +850,9 @@ export const useFlowCanvasStore = create<FlowCanvasState>((set, get) => ({
 
   newProject: () => {
     set({
+      backendCurrentVersionId: null,
+      backendFlowId: null,
+      backendProjectId: null,
       projectId: nanoid(12),
       projectTitle: '未命名项目',
       nodes: [],
@@ -782,7 +866,16 @@ export const useFlowCanvasStore = create<FlowCanvasState>((set, get) => ({
       historyIndex: -1,
       contextMenu: null,
       activeImageTool: null,
+      currentRunId: null,
       isNodeDragging: false,
+      isRunningBackendWorkflow: false,
+      nodeOutputByNodeId: {},
+      nodeRunIdByNodeId: {},
+      nodeRunStatusByNodeId: {},
+      nodeIdByNodeRunId: {},
+      runError: null,
+      runEvents: [],
+      runStatus: null,
     });
   },
 
@@ -796,4 +889,16 @@ export const useFlowCanvasStore = create<FlowCanvasState>((set, get) => ({
   closeContextMenu: () => set({ contextMenu: null }),
   openImageTool: (nodeId, tool) => set({ activeImageTool: { nodeId, tool }, contextMenu: null }),
   closeImageTool: () => set({ activeImageTool: null }),
+  resetBackendRunState: () =>
+    set({
+      currentRunId: null,
+      isRunningBackendWorkflow: false,
+      nodeOutputByNodeId: {},
+      nodeRunIdByNodeId: {},
+      nodeRunStatusByNodeId: {},
+      nodeIdByNodeRunId: {},
+      runError: null,
+      runEvents: [],
+      runStatus: null,
+    }),
 }));

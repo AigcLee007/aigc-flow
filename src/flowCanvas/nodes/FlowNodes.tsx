@@ -52,7 +52,8 @@ import {
 } from 'lucide-react';
 import type { FlowImageGenerationSnapshot, FlowNodeData, FlowNodeKind } from '../types';
 import { useFlowCanvasStore, type FlowDerivedEditCounts, type FlowUpstreamImageRef } from '../store/flowCanvasStore';
-import { runImageEdit, runNodeGeneration, type ImageEditType } from '../runtime/graphExecutor';
+import { runImageEdit, type ImageEditType } from '../runtime/graphExecutor';
+import { runBackendWorkflow } from '../runtime/v2WorkflowRunner';
 import { useVideoModelCatalog } from '../../hooks/useVideoModelCatalog';
 import {
   ensureImageModelCatalogLoaded,
@@ -2063,7 +2064,14 @@ export const TextNodeComponent = memo(function TextNode({
 }: NodeProps<FlowNode>) {
   const d = data;
   const updateNodeData = useFlowCanvasStore((s) => s.updateNodeData);
-  const isGenerating = d.generationStatus === 'generating';
+  const runtimeNodeOutput = useFlowCanvasStore((s) => s.nodeOutputByNodeId[id]);
+  const runtimeNodeStatus = useFlowCanvasStore((s) => s.nodeRunStatusByNodeId[id]);
+  const resolvedText = typeof runtimeNodeOutput?.text === 'string' ? runtimeNodeOutput.text : (d.text || '');
+  const isGenerating = runtimeNodeStatus === 'pending'
+    || runtimeNodeStatus === 'runnable'
+    || runtimeNodeStatus === 'running'
+    || runtimeNodeStatus === 'waiting_provider'
+    || d.generationStatus === 'generating';
   const [hovered, setHovered] = useState(false);
   const { connectionNodeId } = useConnection();
   const isTargeting = !!connectionNodeId && connectionNodeId !== id && hovered;
@@ -2081,11 +2089,11 @@ export const TextNodeComponent = memo(function TextNode({
 
   const handleGenerate = () => {
     if (isGenerating) return;
-    runNodeGeneration(id);
+    void runBackendWorkflow().catch(() => undefined);
   };
 
   const handleCopyText = useCallback(async () => {
-    await navigator.clipboard.writeText(d.text || '');
+    await navigator.clipboard.writeText(resolvedText);
     setCopyToastVisible(true);
     if (copyToastTimerRef.current) {
       window.clearTimeout(copyToastTimerRef.current);
@@ -2094,7 +2102,7 @@ export const TextNodeComponent = memo(function TextNode({
       setCopyToastVisible(false);
       copyToastTimerRef.current = null;
     }, 1800);
-  }, [d.text]);
+  }, [resolvedText]);
 
   const setStyle = (key: keyof FlowNodeData, val: any) => {
     updateNodeData(id, { [key]: val });
@@ -2102,7 +2110,7 @@ export const TextNodeComponent = memo(function TextNode({
 
   const applyTextAction = (type: 'bullet' | 'number' | 'divider' | 'bold' | 'italic' | 'h1' | 'h2' | 'h3') => {
     const textarea = document.querySelector(`textarea[data-node-id="${id}"]`) as HTMLTextAreaElement;
-    const text = d.text || '';
+    const text = String(resolvedText || '');
     
     let start = 0;
     let end = 0;
@@ -2221,8 +2229,8 @@ export const TextNodeComponent = memo(function TextNode({
           <textarea
             data-node-id={id}
             className="nodrag nopan nowheel sleek-scroll-y"
-            value={d.text || ''}
-            onChange={(e) => updateNodeData(id, { text: e.target.value })}
+          value={resolvedText}
+          onChange={(e) => updateNodeData(id, { text: e.target.value })}
             onKeyDown={stopCanvasKeyboardPropagation}
             placeholder="开始输入..."
             spellCheck={false}
@@ -2574,7 +2582,7 @@ export const TextNodeComponent = memo(function TextNode({
                   fontFamily: '"Microsoft YaHei", "微软雅黑", Arial, sans-serif',
                   zIndex: 1,
                 }}>
-                  {d.text?.split('\n').map((line, idx) => {
+                  {String(resolvedText || '').split('\n').map((line, idx) => {
                     if (line.trim() === '---') {
                       return <div key={idx} style={{ height: '1.6em', display: 'flex', alignItems: 'center' }}>
                         <div style={{ width: '100%', height: 1.5, background: 'rgba(255,255,255,0.15)', borderRadius: 1 }} />
@@ -2623,7 +2631,7 @@ export const TextNodeComponent = memo(function TextNode({
                 <textarea
                   autoFocus
                   className="nodrag nopan nowheel"
-                  value={d.text || ''}
+                  value={resolvedText}
                   onChange={(e) => updateNodeData(id, { text: e.target.value })}
                   onKeyDown={stopCanvasKeyboardPropagation}
                   spellCheck={false}
@@ -3079,6 +3087,8 @@ const ImageNodeHeavy = memo(function ImageNodeHeavy({
   const [hoveredReferenceKey, setHoveredReferenceKey] = useState<string | null>(null);
   const [draggingReferenceKey, setDraggingReferenceKey] = useState<string | null>(null);
   const selectedInStore = useFlowCanvasStore((s) => !!s.nodes.find((node) => node.id === id)?.selected);
+  const runtimeNodeOutput = useFlowCanvasStore((s) => s.nodeOutputByNodeId[id]);
+  const runtimeNodeStatus = useFlowCanvasStore((s) => s.nodeRunStatusByNodeId[id]);
   const showNodeEditor = useSingleNodeSelection(selected || selectedInStore);
   const shouldLoadEditorResources = showNodeEditor || activeImageTool?.nodeId === id || fullscreenOpen || assetMenuOpen || slashMenuOpen;
   const models = useImageModelCatalogWhenNeeded(shouldLoadEditorResources);
@@ -3091,8 +3101,17 @@ const ImageNodeHeavy = memo(function ImageNodeHeavy({
   const [aiConfirmType, setAiConfirmType] = useState<Extract<ImageEditType, 'enhance' | 'removeBackground'> | null>(null);
 
   const { connectionNodeId } = useConnection();
-  const hasImage = !!d.thumbnailUrl;
-  const isGenerating = d.generationStatus === 'generating';
+  const runtimeImageAssets = Array.isArray(runtimeNodeOutput?.assets)
+    ? runtimeNodeOutput.assets.filter((asset) => asset.kind === 'image' && asset.downloadUrl)
+    : [];
+  const runtimeThumbnailUrl = runtimeImageAssets[0]?.downloadUrl || '';
+  const effectiveThumbnailUrl = runtimeThumbnailUrl || String(d.thumbnailUrl || '');
+  const hasImage = !!effectiveThumbnailUrl;
+  const isGenerating = runtimeNodeStatus === 'pending'
+    || runtimeNodeStatus === 'runnable'
+    || runtimeNodeStatus === 'running'
+    || runtimeNodeStatus === 'waiting_provider'
+    || d.generationStatus === 'generating';
   const isGeneratedImageNode = hasImage && !!d.lastGenerationSnapshot;
   const showInputHandle = canNodeReceiveIncoming({ type: 'image', data: d } as Node<FlowNodeData>);
   const shouldShowUploadToolbar = !hasImage && showNodeEditor && !hasIncomingEdges && !isGenerating;
@@ -3275,18 +3294,27 @@ const ImageNodeHeavy = memo(function ImageNodeHeavy({
         }))
         .filter((item) => item.url)
     : [];
-  const resultItems = generatedResults.length > 0
-    ? generatedResults
-    : (d.thumbnailUrl
-      ? [{ id: 'result-single', url: String(d.thumbnailUrl), createdAt: Date.now() }]
-      : []);
+  const runtimeResultItems = runtimeImageAssets
+    .map((asset, index) => ({
+      id: `runtime-asset-${asset.assetId}-${index}`,
+      url: String(asset.downloadUrl || ''),
+      createdAt: Date.now(),
+    }))
+    .filter((item) => item.url);
+  const resultItems = runtimeResultItems.length > 0
+    ? runtimeResultItems
+    : generatedResults.length > 0
+      ? generatedResults
+      : (effectiveThumbnailUrl
+        ? [{ id: 'result-single', url: effectiveThumbnailUrl, createdAt: Date.now() }]
+        : []);
   const rawActiveIndex = Number(d.activeResultIndex || 0);
   const activeResultIndex = resultItems.length > 0
     ? Math.min(Math.max(rawActiveIndex, 0), resultItems.length - 1)
     : 0;
   const coverResultId = String(d.coverResultId || '');
   const coverResult = resultItems.find((item) => item.id === coverResultId) || resultItems[activeResultIndex];
-  const displayThumbnailUrl = normalizeBackendAssetUrl(coverResult?.url || String(d.thumbnailUrl || ''));
+  const displayThumbnailUrl = normalizeBackendAssetUrl(coverResult?.url || effectiveThumbnailUrl);
   const resultCount = isGeneratedImageNode ? resultItems.length : 0;
   const canExpandResults = resultCount > 1;
   const favoriteResultIds = useMemo(
@@ -3305,7 +3333,7 @@ const ImageNodeHeavy = memo(function ImageNodeHeavy({
 
   const setParam = (key: string, val: any) => {
     const patch: Partial<FlowNodeData> = { params: { ...p, [key]: val } };
-    if (key === 'aspect_ratio' && !d.thumbnailUrl) {
+    if (key === 'aspect_ratio' && !effectiveThumbnailUrl) {
       const nextSize = getMediaNodeSizeFromRatioString(val, 4 / 3);
       patch.width = nextSize.width;
       patch.height = nextSize.height;
@@ -3427,7 +3455,7 @@ const ImageNodeHeavy = memo(function ImageNodeHeavy({
     if (isGenerating) return;
     const referenceImages = referenceChips.map((item) => item.imageUrl);
     updateNodeData(id, { referenceImages });
-    runNodeGeneration(id);
+    void runBackendWorkflow().catch(() => undefined);
   };
 
   const handleSelectGeneratedResult = useCallback(
@@ -4106,9 +4134,9 @@ const ImageNodeHeavy = memo(function ImageNodeHeavy({
   };
 
   const handleDownload = useCallback(() => {
-    if (!d.thumbnailUrl) return;
-    void downloadImage(String(d.thumbnailUrl), `image-${id}-${Date.now()}.png`);
-  }, [d.thumbnailUrl, id]);
+    if (!effectiveThumbnailUrl) return;
+    void downloadImage(String(effectiveThumbnailUrl), `image-${id}-${Date.now()}.png`);
+  }, [effectiveThumbnailUrl, id]);
 
   const handleStepBack = useCallback(async () => {
     const history = Array.isArray(d.editHistory) ? (d.editHistory as string[]) : [];
@@ -4494,7 +4522,7 @@ const ImageNodeHeavy = memo(function ImageNodeHeavy({
 
   const handleToolAction = useCallback(
     (toolId: string) => {
-      if (!d.thumbnailUrl) return;
+      if (!effectiveThumbnailUrl) return;
       if (toolId !== 'more') setMoreMenuOpen(false);
 
       if (toolId === 'crop') {
@@ -4533,7 +4561,7 @@ const ImageNodeHeavy = memo(function ImageNodeHeavy({
         setMoreMenuOpen((open) => !open);
       }
     },
-    [d.thumbnailUrl, handleDownload, handleStepBack, id, openAnchoredPreviewTool, openImageTool, openRepaintOverlay],
+    [effectiveThumbnailUrl, handleDownload, handleStepBack, id, openAnchoredPreviewTool, openImageTool, openRepaintOverlay],
   );
 
   return (
@@ -4743,17 +4771,17 @@ const ImageNodeHeavy = memo(function ImageNodeHeavy({
       })()}
 
       <LazyOverlayFrame>
-        {isImageToolOpen('crop') && d.thumbnailUrl && (
+        {isImageToolOpen('crop') && effectiveThumbnailUrl && (
           <ImageCropOverlay
-            imageUrl={String(d.thumbnailUrl)}
+            imageUrl={String(effectiveThumbnailUrl)}
             onConfirm={handleCropConfirm}
             onCancel={closeImageTool}
           />
         )}
 
-        {fullscreenOpen && d.thumbnailUrl && (
+        {fullscreenOpen && effectiveThumbnailUrl && (
           <ImageFullscreenOverlay
-            imageUrl={String(d.thumbnailUrl)}
+            imageUrl={String(effectiveThumbnailUrl)}
             onClose={() => setFullscreenOpen(false)}
             onDownload={handleDownload}
             prompt={isGeneratedImageNode ? String((d.lastGenerationSnapshot as FlowImageGenerationSnapshot | undefined)?.prompt || d.generationPrompt || '') : ''}
@@ -4768,9 +4796,9 @@ const ImageNodeHeavy = memo(function ImageNodeHeavy({
           />
         )}
 
-        {isImageToolOpen('resize') && d.thumbnailUrl && (
+        {isImageToolOpen('resize') && effectiveThumbnailUrl && (
           <ImageResizeOverlay
-            imageUrl={String(d.thumbnailUrl)}
+            imageUrl={String(effectiveThumbnailUrl)}
             initialWidth={typeof d.naturalWidth === 'number' ? d.naturalWidth : undefined}
             initialHeight={typeof d.naturalHeight === 'number' ? d.naturalHeight : undefined}
             onConfirm={handleResizeConfirm}
@@ -4778,63 +4806,63 @@ const ImageNodeHeavy = memo(function ImageNodeHeavy({
           />
         )}
 
-        {isImageToolOpen('split') && d.thumbnailUrl && (
+        {isImageToolOpen('split') && effectiveThumbnailUrl && (
           <ImageSplitOverlay
             key={splitInitialGridSize}
-            imageUrl={String(d.thumbnailUrl)}
+            imageUrl={String(effectiveThumbnailUrl)}
             initialGridSize={splitInitialGridSize}
             onConfirm={handleSplitConfirm}
             onCancel={closeImageTool}
           />
         )}
 
-        {isImageToolOpen('annotate') && d.thumbnailUrl && (
+        {isImageToolOpen('annotate') && effectiveThumbnailUrl && (
           <ImageAnnotateOverlay
-            imageUrl={String(d.thumbnailUrl)}
+            imageUrl={String(effectiveThumbnailUrl)}
             initialWidth={typeof d.naturalWidth === 'number' ? d.naturalWidth : undefined}
             initialHeight={typeof d.naturalHeight === 'number' ? d.naturalHeight : undefined}
             onConfirm={handleAnnotateConfirm}
             onCancel={closeImageTool}
           />
         )}
-        {(isImageToolOpen('repaint') || isImageToolOpen('erase')) && d.thumbnailUrl && (
+        {(isImageToolOpen('repaint') || isImageToolOpen('erase')) && effectiveThumbnailUrl && (
           <ImageRepaintOverlay
-            imageUrl={String(d.thumbnailUrl)}
+            imageUrl={String(effectiveThumbnailUrl)}
             mode={repaintMode}
             onConfirm={handleRepaintConfirm}
             onCancel={closeImageTool}
           />
         )}
 
-        {isImageToolOpen('outpaint') && d.thumbnailUrl && (
+        {isImageToolOpen('outpaint') && effectiveThumbnailUrl && (
           <ImageOutpaintOverlay
-            imageUrl={String(d.thumbnailUrl)}
+            imageUrl={String(effectiveThumbnailUrl)}
             onConfirm={handleOutpaintConfirm}
             onCancel={closeImageTool}
           />
         )}
 
-        {isImageToolOpen('lighting') && d.thumbnailUrl && (
+        {isImageToolOpen('lighting') && effectiveThumbnailUrl && (
           <ImageLightingOverlay
-            imageUrl={String(d.thumbnailUrl)}
+            imageUrl={String(effectiveThumbnailUrl)}
             anchorRect={imageCardRef.current?.getBoundingClientRect() || imageNodeRef.current?.getBoundingClientRect()}
             onConfirm={handleLightingConfirm}
             onCancel={closeImageTool}
           />
         )}
 
-        {isImageToolOpen('multiAngle') && d.thumbnailUrl && (
+        {isImageToolOpen('multiAngle') && effectiveThumbnailUrl && (
           <ImageMultiAngleOverlay
-            imageUrl={String(d.thumbnailUrl)}
+            imageUrl={String(effectiveThumbnailUrl)}
             anchorRect={imageCardRef.current?.getBoundingClientRect() || imageNodeRef.current?.getBoundingClientRect()}
             onConfirm={handleMultiAngleConfirm}
             onCancel={closeImageTool}
           />
         )}
 
-        {isImageToolOpen('folder') && d.thumbnailUrl && (
+        {isImageToolOpen('folder') && effectiveThumbnailUrl && (
           <ImageFolderOverlay
-            imageUrl={String(d.thumbnailUrl)}
+            imageUrl={String(effectiveThumbnailUrl)}
             nodeId={id}
             title={String(d.title || '图片素材')}
             projectId={projectId}
@@ -4848,10 +4876,10 @@ const ImageNodeHeavy = memo(function ImageNodeHeavy({
           />
         )}
 
-        {aiConfirmType && d.thumbnailUrl && (
+        {aiConfirmType && effectiveThumbnailUrl && (
           <ImageAiConfirmOverlay
             editType={aiConfirmType}
-            imageUrl={String(d.thumbnailUrl)}
+            imageUrl={String(effectiveThumbnailUrl)}
             modelLabel={modelOptions.find((model) => model.id === currentModelId)?.label || currentModelId}
             onConfirm={async () => {
               await runQuickAiEdit(aiConfirmType);
@@ -5303,6 +5331,8 @@ export const VideoNodeComponent = memo(function VideoNode({
 }: NodeProps<FlowNode>) {
   const d = data;
   const updateNodeData = useFlowCanvasStore((s) => s.updateNodeData);
+  const runtimeNodeOutput = useFlowCanvasStore((s) => s.nodeOutputByNodeId[id]);
+  const runtimeNodeStatus = useFlowCanvasStore((s) => s.nodeRunStatusByNodeId[id]);
   const { models } = useVideoModelCatalog();
   const [hovered, setHovered] = useState(false);
   const [showBatchSelector, setShowBatchSelector] = useState(false);
@@ -5317,7 +5347,15 @@ export const VideoNodeComponent = memo(function VideoNode({
     : [{ id: 'veo3.1-fast', label: 'Veo 3.1 Fast' }];
 
   const currentModelId = String(d.modelId || modelOptions[0]?.id || 'veo3.1-fast');
-  const isGenerating = d.generationStatus === 'generating';
+  const runtimeVideoAssets = Array.isArray(runtimeNodeOutput?.assets)
+    ? runtimeNodeOutput.assets.filter((asset) => asset.kind === 'video' && asset.downloadUrl)
+    : [];
+  const effectivePosterUrl = runtimeVideoAssets[0]?.downloadUrl || String(d.posterUrl || '');
+  const isGenerating = runtimeNodeStatus === 'pending'
+    || runtimeNodeStatus === 'runnable'
+    || runtimeNodeStatus === 'running'
+    || runtimeNodeStatus === 'waiting_provider'
+    || d.generationStatus === 'generating';
 
   const aspectOptions = getVideoModelAspectRatioOptions(currentModelId);
   const durationOptions = getVideoModelDurationOptions(currentModelId);
@@ -5329,7 +5367,7 @@ export const VideoNodeComponent = memo(function VideoNode({
 
   const setParam = (key: string, val: any) => {
     const patch: Partial<FlowNodeData> = { params: { ...p, [key]: val } };
-    if (key === 'aspect_ratio' && !d.posterUrl) {
+    if (key === 'aspect_ratio' && !effectivePosterUrl) {
       const nextSize = getMediaNodeSizeFromRatioString(val, 16 / 9);
       patch.width = nextSize.width;
       patch.height = nextSize.height;
@@ -5340,7 +5378,7 @@ export const VideoNodeComponent = memo(function VideoNode({
 
   const handleGenerate = () => {
     if (isGenerating) return;
-    runNodeGeneration(id);
+    void runBackendWorkflow().catch(() => undefined);
   };
 
   return (
@@ -5370,10 +5408,10 @@ export const VideoNodeComponent = memo(function VideoNode({
       </Handle>
 
       <div style={card(d.width || FLOW_NODE_DEFAULT_SIZES.video.width, d.height || FLOW_NODE_DEFAULT_SIZES.video.height, selected, isTargeting)}>
-        {d.posterUrl ? (
+        {effectivePosterUrl ? (
           <div style={{ ...contentArea, height: '100%' }}>
             <video
-              src={d.posterUrl}
+              src={effectivePosterUrl}
               controls
               style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block', background: '#000' }}
             />
@@ -5814,13 +5852,12 @@ export const GroupNodeComponent = memo(function GroupNode({
 
   const groupBg = String(d.backgroundColor || 'rgba(64,64,64,0.58)');
   const executeGroup = () => {
-    childNodes
-      .filter((node) => ['text', 'image', 'video'].includes(String(node.type || node.data.kind)))
-      .forEach((node) => {
-        if (node.data.generationPrompt) {
-          void runNodeGeneration(node.id);
-        }
-      });
+    const executableNodes = childNodes.filter((node) =>
+      ['text', 'image', 'video'].includes(String(node.type || node.data.kind))
+      && node.data.generationPrompt,
+    );
+    if (executableNodes.length === 0) return;
+    void runBackendWorkflow().catch(() => undefined);
   };
   const createTemplate = async () => {
     const template = {

@@ -9,6 +9,7 @@ import { AiFlowCanvas } from './canvas/AiFlowCanvas';
 import { FlowTopToolbar } from './canvas/FlowTopToolbar';
 import { useFlowCanvasStore } from './store/flowCanvasStore';
 import type { FlowNodeKind } from './types';
+import { disposeBackendWorkflowRunStream } from './runtime/v2WorkflowRunner';
 
 const useFlowShortcuts = () => {
   const undo = useFlowCanvasStore((s) => s.undo);
@@ -185,6 +186,34 @@ const useAutoLoad = () => {
   }, [loadProject, nodeCount]);
 };
 
+const useBackendFlowBinding = () => {
+  const setBackendFlowBinding = useFlowCanvasStore((s) => s.setBackendFlowBinding);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const params = new URLSearchParams(window.location.search);
+    const backendFlowId = params.get('backendFlowId') || params.get('flowId');
+    const backendProjectId = params.get('backendProjectId') || params.get('projectId');
+    const backendCurrentVersionId = params.get('backendCurrentVersionId') || params.get('currentVersionId');
+
+    if (!backendFlowId && !backendProjectId && !backendCurrentVersionId) {
+      return;
+    }
+
+    setBackendFlowBinding({
+      backendCurrentVersionId,
+      backendFlowId,
+      backendProjectId,
+    });
+  }, [setBackendFlowBinding]);
+};
+
+const useBackendRunCleanup = () => {
+  useEffect(() => () => {
+    disposeBackendWorkflowRunStream();
+  }, []);
+};
+
 const StatsOverlay: React.FC = React.memo(() => {
   const nodeCount = useFlowCanvasStore((s) => s.nodes.length);
   const edgeCount = useFlowCanvasStore((s) => s.edges.length);
@@ -195,6 +224,30 @@ const StatsOverlay: React.FC = React.memo(() => {
     <div style={statsStyle}>
       <span>节点 <span style={{ color: '#60a5fa' }}>{nodeCount}</span></span>
       <span>连线 <span style={{ color: '#34d399' }}>{edgeCount}</span></span>
+    </div>
+  );
+});
+
+const BackendRunOverlay: React.FC = React.memo(() => {
+  const backendFlowId = useFlowCanvasStore((s) => s.backendFlowId);
+  const currentRunId = useFlowCanvasStore((s) => s.currentRunId);
+  const isRunningBackendWorkflow = useFlowCanvasStore((s) => s.isRunningBackendWorkflow);
+  const runError = useFlowCanvasStore((s) => s.runError);
+  const runStatus = useFlowCanvasStore((s) => s.runStatus);
+
+  if (!backendFlowId && !runError) {
+    return null;
+  }
+
+  return (
+    <div style={backendRunOverlayStyle}>
+      <span>
+        {backendFlowId ? `v2 Flow ${backendFlowId}` : '未绑定 v2 Flow'}
+      </span>
+      {currentRunId && <span>Run {currentRunId}</span>}
+      {runStatus && <span>状态 {runStatus}</span>}
+      {isRunningBackendWorkflow && <span>后端运行中</span>}
+      {runError && <span style={{ color: '#fca5a5' }}>{runError}</span>}
     </div>
   );
 });
@@ -248,6 +301,8 @@ const FlowCanvasPage: React.FC = () => {
   useFlowViewportLock();
   useAutoSave();
   useAutoLoad();
+  useBackendFlowBinding();
+  useBackendRunCleanup();
 
   return (
     <div style={pageStyle}>
@@ -256,6 +311,7 @@ const FlowCanvasPage: React.FC = () => {
         <ReactFlowProvider>
           <AiFlowCanvas cullingEnabled={cullingEnabled} />
           <StatsOverlay />
+          <BackendRunOverlay />
           <EmptyState />
         </ReactFlowProvider>
       </div>
@@ -290,6 +346,24 @@ const statsStyle: React.CSSProperties = {
   display: 'flex',
   gap: 12,
   transition: 'left 0.22s ease',
+};
+
+const backendRunOverlayStyle: React.CSSProperties = {
+  position: 'absolute',
+  bottom: 18,
+  right: 24,
+  zIndex: 20,
+  maxWidth: 'min(560px, calc(100vw - 48px))',
+  background: 'rgba(18,18,28,0.88)',
+  border: '1px solid rgba(255,255,255,0.08)',
+  borderRadius: 12,
+  padding: '8px 12px',
+  fontSize: 11,
+  color: '#cbd5e1',
+  fontFamily: 'monospace',
+  display: 'flex',
+  gap: 12,
+  flexWrap: 'wrap',
 };
 
 const emptyStyle: React.CSSProperties = {

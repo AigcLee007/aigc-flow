@@ -231,6 +231,60 @@ Current PR-13 limits:
 - no frontend billing cutover exists yet
 - no pricing admin backend or quota engine exists yet
 
+## PR-14 frontend cutover to the v2 workflow run API
+
+PR-14 adds the first frontend production-path cutover for workflow execution:
+
+- the frontend production run path now targets:
+  - `POST /api/v2/flows/:flowId/runs`
+  - `GET /api/v2/workflow-runs/:runId`
+  - `GET /api/v2/workflow-runs/:runId/events`
+  - `GET /api/v2/workflow-runs/:runId/stream`
+  - `GET /api/v2/assets/:assetId/download-url`
+- `graphExecutor` remains in the repo as a legacy / local-preview helper and is
+  no longer the intended production execution path
+- the frontend runtime now keeps backend run state separately from the editable
+  canvas snapshot so short-lived asset download URLs are not persisted as authoring data
+
+Current PR-14 behavior:
+
+- the flow canvas can store a backend binding for:
+  - `backendProjectId`
+  - `backendFlowId`
+  - `backendCurrentVersionId`
+- the current page also accepts the same values from query parameters, for example:
+  - `?backendProjectId=<uuid>&backendFlowId=<uuid>&backendCurrentVersionId=<uuid>`
+- when the user clicks a production run action on a text / image / video node,
+  the frontend:
+  - starts a backend workflow run for the bound `backendFlowId`
+  - opens the workflow run stream
+  - updates runtime node status from backend events
+  - fetches the final workflow run snapshot
+  - resolves `AssetRef` outputs through short-lived download URLs
+- if the canvas is not bound to a backend flow, the frontend now shows a clear
+  error instead of silently falling back to local production execution
+
+How to use the PR-14 frontend path:
+
+1. Log in with a v2 access token available to the browser runtime.
+2. Open a flow canvas that is already bound to a published backend flow.
+3. Trigger a production run from the flow canvas.
+4. The frontend creates a workflow run, streams node events, and renders final
+   text / image / video outputs from workflow run state and asset download URLs.
+
+Current PR-14 limits:
+
+- this phase does not add billing UI
+- this phase does not add credential management UI
+- this phase does not add a full asset manager UI
+- this phase does not migrate legacy data
+- this phase does not remove legacy runtime code
+- this phase does not delete `graphExecutor`
+- this phase does not attempt to publish the current local TapNow canvas graph
+  as a backend workflow automatically
+- if the current canvas does not have a stable backend `flowId` binding, the
+  frontend refuses the production run and asks for a bound published flow first
+
 ## Configure `DATABASE_URL`
 
 Copy `.env.v2.example` or export the variable directly before running

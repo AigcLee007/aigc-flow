@@ -16,12 +16,18 @@ export type FlowNodeKind =
 // ─── Node Status ─────────────────────────────────────────────
 export type FlowNodeStatus =
   | 'idle'
+  | 'pending'
   | 'queued'
+  | 'runnable'
   | 'running'
+  | 'waiting_provider'
   | 'success'
+  | 'succeeded'
   | 'error'
+  | 'failed'
   | 'stale'
-  | 'cancelled';
+  | 'cancelled'
+  | 'canceled';
 
 // ─── Generation Status (embedded in content nodes) ───────────
 export type FlowGenerationStatus = 'idle' | 'generating' | 'done' | 'error';
@@ -30,6 +36,24 @@ export interface FlowImageResultItem {
   id: string;
   url: string;
   createdAt: number;
+}
+
+export interface FlowRuntimeAssetRef {
+  assetId: string;
+  downloadUrl?: string;
+  expiresAt?: string | null;
+  height?: number | null;
+  kind: string;
+  mimeType: string;
+  width?: number | null;
+}
+
+export interface FlowRuntimeNodeOutput {
+  assets?: FlowRuntimeAssetRef[];
+  errorMessage?: string | null;
+  output?: Record<string, unknown> | null;
+  providerTask?: Record<string, unknown> | null;
+  text?: string | null;
 }
 
 export interface FlowImageGenerationSnapshot {

@@ -3,6 +3,8 @@
 
 const cleanUrl = (url: string) => url.replace(/\/$/, '');
 const STORAGE_KEY = 'auth-session-v1';
+const V2_ACCESS_TOKEN_STORAGE_KEY = 'v2-access-token';
+const V2_REFRESH_TOKEN_STORAGE_KEY = 'v2-refresh-token';
 export const AUTH_SESSION_CHANGE_EVENT = 'auth-session-change';
 
 export type AuthUserRole = 'user' | 'admin' | 'super_admin';
@@ -31,6 +33,16 @@ export interface AuthSessionPayload {
 }
 
 interface LoginResponse {
+  accessToken?: string;
+  currentTenant?: {
+    id: string;
+    name: string;
+    plan: string;
+    slug: string;
+    status: string;
+  };
+  permissions?: string[];
+  refreshToken?: string;
   success: boolean;
   sessionToken: string;
   user: AuthUserProfile;
@@ -77,10 +89,64 @@ export const setStoredAuthSessionToken = (sessionToken: string) => {
   emitAuthSessionChange();
 };
 
+export const getStoredV2AccessToken = (): string | null => {
+  if (!canUseStorage()) return null;
+  const raw = window.localStorage.getItem(V2_ACCESS_TOKEN_STORAGE_KEY);
+  return raw && raw.trim() ? raw.trim() : null;
+};
+
+export const setStoredV2AccessToken = (accessToken: string) => {
+  if (!canUseStorage()) return;
+  window.localStorage.setItem(V2_ACCESS_TOKEN_STORAGE_KEY, accessToken);
+  emitAuthSessionChange();
+};
+
+export const clearStoredV2AccessToken = () => {
+  if (!canUseStorage()) return;
+  window.localStorage.removeItem(V2_ACCESS_TOKEN_STORAGE_KEY);
+  emitAuthSessionChange();
+};
+
+export const getStoredV2RefreshToken = (): string | null => {
+  if (!canUseStorage()) return null;
+  const raw = window.localStorage.getItem(V2_REFRESH_TOKEN_STORAGE_KEY);
+  return raw && raw.trim() ? raw.trim() : null;
+};
+
+export const setStoredV2RefreshToken = (refreshToken: string) => {
+  if (!canUseStorage()) return;
+  window.localStorage.setItem(V2_REFRESH_TOKEN_STORAGE_KEY, refreshToken);
+  emitAuthSessionChange();
+};
+
+export const clearStoredV2RefreshToken = () => {
+  if (!canUseStorage()) return;
+  window.localStorage.removeItem(V2_REFRESH_TOKEN_STORAGE_KEY);
+  emitAuthSessionChange();
+};
+
+export const clearStoredV2Auth = () => {
+  clearStoredV2AccessToken();
+  clearStoredV2RefreshToken();
+};
+
 export const clearStoredAuthSessionToken = () => {
   if (!canUseStorage()) return;
   window.localStorage.removeItem(STORAGE_KEY);
   emitAuthSessionChange();
+};
+
+export const getAuthorizedV2Headers = async (): Promise<Record<string, string>> => {
+  const accessToken = getStoredV2AccessToken();
+  if (!accessToken) {
+    throw new Error('缺少 v2 access token，请先完成 v2 登录后再运行后端工作流');
+  }
+
+  return {
+    Authorization: accessToken.startsWith('Bearer ')
+      ? accessToken
+      : `Bearer ${accessToken}`,
+  };
 };
 
 export const buildBillingIdentityHeaders = (
@@ -210,6 +276,12 @@ export const loginWithEmailCode = async (
   }
 
   setStoredAuthSessionToken(data.sessionToken);
+  if (data.accessToken) {
+    setStoredV2AccessToken(data.accessToken);
+  }
+  if (data.refreshToken) {
+    setStoredV2RefreshToken(data.refreshToken);
+  }
 
   return {
     success: true,
@@ -245,6 +317,12 @@ export const registerWithPassword = async ({
   }
 
   setStoredAuthSessionToken(data.sessionToken);
+  if (data.accessToken) {
+    setStoredV2AccessToken(data.accessToken);
+  }
+  if (data.refreshToken) {
+    setStoredV2RefreshToken(data.refreshToken);
+  }
 
   return {
     success: true,
@@ -275,6 +353,12 @@ export const loginWithPassword = async ({
   }
 
   setStoredAuthSessionToken(data.sessionToken);
+  if (data.accessToken) {
+    setStoredV2AccessToken(data.accessToken);
+  }
+  if (data.refreshToken) {
+    setStoredV2RefreshToken(data.refreshToken);
+  }
 
   return {
     success: true,
@@ -297,6 +381,7 @@ export const logoutAuthSession = async () => {
     }
   } finally {
     clearStoredAuthSessionToken();
+    clearStoredV2Auth();
   }
 };
 
@@ -323,6 +408,12 @@ export const resetPasswordWithEmailCode = async ({
   }
 
   setStoredAuthSessionToken(data.sessionToken);
+  if (data.accessToken) {
+    setStoredV2AccessToken(data.accessToken);
+  }
+  if (data.refreshToken) {
+    setStoredV2RefreshToken(data.refreshToken);
+  }
 
   return {
     success: true,

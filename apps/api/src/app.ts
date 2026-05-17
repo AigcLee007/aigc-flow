@@ -1,10 +1,13 @@
 import Fastify from "fastify";
 
+import { CredentialVault } from "@aigc-flow/ai-gateway-core";
 import { createPgPool } from "@aigc-flow/db";
 import { S3StorageProvider, type StorageProvider } from "@aigc-flow/storage";
 
 import { getApiEnv, type ApiEnv } from "./config/env.js";
 import { registerRequestContext } from "./http/request-context.js";
+import { registerAiGatewayAdminRoutes } from "./modules/ai-gateway/ai-gateway.routes.js";
+import { AiGatewayAdminService } from "./modules/ai-gateway/ai-gateway.service.js";
 import { registerAuthRoutes } from "./modules/auth/auth.routes.js";
 import { AuthService } from "./modules/auth/auth.service.js";
 import { registerAssetRoutes } from "./modules/assets/assets.routes.js";
@@ -34,8 +37,16 @@ export function buildApp(options?: {
       region: env.s3Region,
       secretAccessKey: env.s3SecretAccessKey,
     });
+  const credentialVault = new CredentialVault({
+    keyVersion: env.credentialKeyVersion,
+    masterKey: env.credentialMasterKey,
+  });
   const authService = new AuthService({
     env,
+    pool,
+  });
+  const aiGatewayService = new AiGatewayAdminService({
+    credentialVault,
     pool,
   });
   const assetsService = new AssetsService({
@@ -50,8 +61,10 @@ export function buildApp(options?: {
     logger: options?.logger ?? true,
   });
 
+  app.decorate("aiGatewayService", aiGatewayService);
   app.decorate("authService", authService);
   app.decorate("assetsService", assetsService);
+  app.decorate("credentialVault", credentialVault);
   app.decorate("projectsService", projectsService);
   app.decorate("flowsService", flowsService);
   app.decorate("storageProvider", storageProvider);
@@ -67,6 +80,7 @@ export function buildApp(options?: {
     return { status: "ok" };
   });
 
+  registerAiGatewayAdminRoutes(app);
   registerAuthRoutes(app);
   registerAssetRoutes(app);
   registerProjectRoutes(app);

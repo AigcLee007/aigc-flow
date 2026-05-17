@@ -47,6 +47,18 @@ The current Fastify v2 service exposes:
 - `GET /api/v2/assets/:assetId`
 - `GET /api/v2/assets/:assetId/download-url`
 - `DELETE /api/v2/assets/:assetId`
+- `GET /api/v2/admin/ai/providers`
+- `POST /api/v2/admin/ai/providers`
+- `GET /api/v2/admin/ai/models`
+- `POST /api/v2/admin/ai/models`
+- `GET /api/v2/admin/ai/routes`
+- `POST /api/v2/admin/ai/routes`
+- `PATCH /api/v2/admin/ai/routes/:routeId`
+- `GET /api/v2/admin/credentials`
+- `POST /api/v2/admin/credentials`
+- `PATCH /api/v2/admin/credentials/:credentialId`
+- `POST /api/v2/admin/credentials/:credentialId/rotate`
+- `DELETE /api/v2/admin/credentials/:credentialId`
 
 By default it listens on `http://localhost:3366`.
 
@@ -88,6 +100,30 @@ $env:JWT_REFRESH_SECRET="dev_refresh_secret_change_me"
 In production, `JWT_ACCESS_SECRET` must be present or the v2 API will fail to
 start. `JWT_REFRESH_SECRET` remains in the environment contract even though
 refresh tokens are currently random database-backed tokens rather than JWTs.
+
+## Configure the Credential Vault
+
+PR-07 adds the first AI Gateway schema and the encrypted credential vault
+foundation.
+
+PowerShell:
+
+```powershell
+$env:CREDENTIAL_MASTER_KEY="MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY="
+$env:CREDENTIAL_KEY_VERSION="v1"
+```
+
+Rules:
+
+- `CREDENTIAL_MASTER_KEY` must be a base64-encoded 32-byte key
+- credential secrets are encrypted with AES-256-GCM before they reach PostgreSQL
+- PostgreSQL stores `encrypted_secret`, `nonce`, `auth_tag`, `key_version`, and
+  a non-reversible secret fingerprint
+- API responses return masked secrets only, never plaintext or raw encrypted
+  fields
+
+Development defaults now live in `.env.v2.example`. Production startup requires
+`CREDENTIAL_MASTER_KEY`; the API fails fast if it is missing.
 
 ## Configure S3 / MinIO asset storage
 
@@ -160,6 +196,7 @@ Current migrations:
 - `000003_auth.sql`
 - `000004_projects_flows.sql`
 - `000005_assets.sql`
+- `000006_ai_gateway.sql`
 
 `000001_extensions.sql` installs:
 
@@ -191,6 +228,15 @@ Current migrations:
 - `assets`
 - `asset_variants`
 
+`000006_ai_gateway.sql` adds the current AI Gateway metadata and credential
+schema:
+
+- `ai_providers`
+- `ai_models`
+- `api_credentials`
+- `ai_routes`
+- `ai_call_logs`
+
 PR-03 and PR-04 also introduce PostgreSQL helper functions for request context
 and the current base RLS policies for tenant-scoped tables.
 
@@ -221,6 +267,8 @@ verify:
 - tenant RLS isolation for projects / flows / flow_versions
 - assets / asset_variants migrations
 - tenant RLS isolation for assets / asset_variants
+- ai gateway migrations
+- tenant RLS isolation for credentials / routes / call logs
 
 ## Run the `apps/api` auth tests
 
@@ -258,6 +306,10 @@ These cover:
 - asset metadata reads without permanent public URLs
 - tenant isolation for asset metadata and download URLs
 - soft-deleted assets refusing download URLs
+- encrypted credential creation and rotation
+- masked credential responses without secret leakage
+- provider / model / route admin APIs
+- tenant isolation for credentials and routes
 
 You can also run the standalone workflow compiler tests:
 
@@ -303,6 +355,12 @@ PR-06 extends the same RLS pattern to:
 
 - `assets`
 - `asset_variants`
+
+PR-07 extends tenant-aware access to:
+
+- `api_credentials`
+- `ai_routes`
+- `ai_call_logs`
 
 ## Try the Auth v2 API
 
@@ -414,3 +472,65 @@ curl http://localhost:3366/api/v2/assets/<asset-id>/download-url ^
 
 PR-06 does not expose permanent public URLs and does not route through the
 legacy generated asset service.
+
+## Try the PR-07 admin AI APIs
+
+PR-07 adds the schema and admin control plane for AI Gateway configuration. It
+does not execute provider calls yet; runtime provider dispatch starts in PR-08.
+
+Create a provider:
+
+```bash
+curl -X POST http://localhost:3366/api/v2/admin/ai/providers ^
+  -H "authorization: Bearer <access-token>" ^
+  -H "content-type: application/json" ^
+  -d "{\"key\":\"openai\",\"name\":\"OpenAI\",\"kind\":\"openai\"}"
+```
+
+Create a model:
+
+```bash
+curl -X POST http://localhost:3366/api/v2/admin/ai/models ^
+  -H "authorization: Bearer <access-token>" ^
+  -H "content-type: application/json" ^
+  -d "{\"providerId\":\"<provider-id>\",\"modelKey\":\"gpt-4.1-mini\",\"displayName\":\"GPT-4.1 Mini\",\"modality\":\"text\"}"
+```
+
+Create a credential:
+
+```bash
+curl -X POST http://localhost:3366/api/v2/admin/credentials ^
+  -H "authorization: Bearer <access-token>" ^
+  -H "content-type: application/json" ^
+  -d "{\"providerId\":\"<provider-id>\",\"name\":\"Primary key\",\"secret\":\"sk-example-secret\"}"
+```
+
+Create a tenant route:
+
+```bash
+curl -X POST http://localhost:3366/api/v2/admin/ai/routes ^
+  -H "authorization: Bearer <access-token>" ^
+  -H "content-type: application/json" ^
+  -d "{\"providerId\":\"<provider-id>\",\"modelId\":\"<model-id>\",\"credentialId\":\"<credential-id>\",\"routeKey\":\"default-text\",\"modality\":\"text\"}"
+```
+
+Rotate a credential:
+
+```bash
+curl -X POST http://localhost:3366/api/v2/admin/credentials/<credential-id>/rotate ^
+  -H "authorization: Bearer <access-token>" ^
+  -H "content-type: application/json" ^
+  -d "{\"secret\":\"sk-rotated-secret\"}"
+```
+
+Current PR-07 scope:
+
+- stores AI provider, model, route, and credential metadata
+- encrypts provider secrets in PostgreSQL with the credential vault
+- exposes masked credential admin APIs
+
+Deferred to PR-08:
+
+- actual provider adapters
+- runtime route resolution and dispatch
+- text / image / video generation calls

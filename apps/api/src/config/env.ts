@@ -1,5 +1,7 @@
 export type ApiEnv = {
   accessTokenTtlSeconds: number;
+  credentialKeyVersion: string;
+  credentialMasterKey: string;
   jwtAccessSecret: string;
   jwtRefreshSecret: string;
   nodeEnv: string;
@@ -13,6 +15,8 @@ export type ApiEnv = {
 };
 
 const DEV_ACCESS_SECRET = "dev_access_secret_change_me";
+const DEV_CREDENTIAL_KEY_VERSION = "v1";
+const DEV_CREDENTIAL_MASTER_KEY = "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=";
 const DEV_REFRESH_SECRET = "dev_refresh_secret_change_me";
 const DEV_S3_ACCESS_KEY_ID = "minio";
 const DEV_S3_BUCKET = "aigc-flow-dev";
@@ -27,6 +31,12 @@ export function getApiEnv(): ApiEnv {
   const jwtAccessSecret =
     process.env.JWT_ACCESS_SECRET?.trim() ||
     (isProduction ? "" : DEV_ACCESS_SECRET);
+  const credentialMasterKey =
+    process.env.CREDENTIAL_MASTER_KEY?.trim() ||
+    (isProduction ? "" : DEV_CREDENTIAL_MASTER_KEY);
+  const credentialKeyVersion =
+    process.env.CREDENTIAL_KEY_VERSION?.trim() ||
+    DEV_CREDENTIAL_KEY_VERSION;
   const jwtRefreshSecret =
     process.env.JWT_REFRESH_SECRET?.trim() ||
     (isProduction ? "" : DEV_REFRESH_SECRET);
@@ -37,6 +47,10 @@ export function getApiEnv(): ApiEnv {
 
   if (isProduction && !jwtRefreshSecret) {
     throw new Error("JWT_REFRESH_SECRET is required to start the v2 API");
+  }
+
+  if (!credentialMasterKey) {
+    throw new Error("CREDENTIAL_MASTER_KEY is required to start the v2 API");
   }
 
   const s3Endpoint =
@@ -80,6 +94,8 @@ export function getApiEnv(): ApiEnv {
 
   return {
     accessTokenTtlSeconds: 60 * 15,
+    credentialKeyVersion,
+    credentialMasterKey,
     jwtAccessSecret,
     jwtRefreshSecret,
     nodeEnv,

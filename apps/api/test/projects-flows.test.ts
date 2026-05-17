@@ -14,10 +14,18 @@ const describeWithDatabase = hasDatabaseEnv() ? describe : describe.skip;
 
 const testEnv: ApiEnv = {
   accessTokenTtlSeconds: 60 * 15,
+  credentialKeyVersion: "v1",
+  credentialMasterKey: "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=",
   jwtAccessSecret: "test_access_secret_1234567890",
   jwtRefreshSecret: "test_refresh_secret_1234567890",
   nodeEnv: "test",
   refreshTokenTtlSeconds: 60 * 60 * 24 * 7,
+  s3AccessKeyId: "test-access",
+  s3Bucket: "test-bucket",
+  s3Endpoint: "http://localhost:9000",
+  s3ForcePathStyle: true,
+  s3Region: "us-east-1",
+  s3SecretAccessKey: "test-secret",
 };
 
 afterAll(() => {

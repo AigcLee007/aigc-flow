@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 
-import { createPgPool, withTenantTransaction } from "@aigc-flow/db";
+import { createPgPool, safeRecordAuditLog, withTenantTransaction } from "@aigc-flow/db";
 import type { Pool, PoolClient } from "pg";
 
 import type { ApiEnv } from "../../config/env.js";
@@ -50,6 +50,9 @@ type PublicUser = {
 
 type SessionMetadata = {
   ipAddress?: string | null;
+  ipHash?: string | null;
+  requestId?: string | null;
+  traceId?: string | null;
   userAgent?: string | null;
 };
 
@@ -334,7 +337,7 @@ export class AuthService {
         this.pool,
       );
 
-      return {
+      const response = {
         accessToken: await signAccessToken(
           {
             sessionId,
@@ -347,6 +350,30 @@ export class AuthService {
         refreshToken,
         user: result.user,
       };
+
+      await safeRecordAuditLog(
+        {
+          action: "auth.register",
+          actorType: "user",
+          actorUserId: result.user.id,
+          ipHash: metadata.ipHash ?? hashIpAddress(metadata.ipAddress),
+          metadata: {
+            sessionId,
+            tenantId: result.currentTenant.id,
+          },
+          requestId: metadata.requestId,
+          resourceId: result.user.id,
+          resourceType: "user",
+          tenantId: result.currentTenant.id,
+          traceId: metadata.traceId,
+          userAgent: metadata.userAgent ?? null,
+        },
+        {
+          pool: this.pool,
+        },
+      );
+
+      return response;
     } catch (error) {
       this.rethrowKnownDatabaseError(error, "Unable to register user");
     }
@@ -477,7 +504,7 @@ export class AuthService {
       this.pool,
     );
 
-    return {
+    const response = {
       accessToken: await signAccessToken(
         {
           sessionId,
@@ -491,6 +518,30 @@ export class AuthService {
       refreshToken,
       user: mapUser(user),
     };
+
+    await safeRecordAuditLog(
+      {
+        action: "auth.login",
+        actorType: "user",
+        actorUserId: user.id,
+        ipHash: metadata.ipHash ?? hashIpAddress(metadata.ipAddress),
+        metadata: {
+          roleKey: currentMembership.roleKey,
+          sessionId,
+        },
+        requestId: metadata.requestId,
+        resourceId: sessionId,
+        resourceType: "auth_session",
+        tenantId: currentTenant.id,
+        traceId: metadata.traceId,
+        userAgent: metadata.userAgent ?? null,
+      },
+      {
+        pool: this.pool,
+      },
+    );
+
+    return response;
   }
 
   async refresh(input: RefreshInput) {
@@ -599,22 +650,37 @@ export class AuthService {
 
   async logout(input: { refreshToken?: string | null }, context: RequestContext) {
     const client = await this.pool.connect();
+    let auditActorUserId = context.userId;
+    let auditSessionId = context.sessionId;
+    let auditTenantId = context.tenantId;
 
     try {
       await client.query("BEGIN");
 
       let sessionId = context.sessionId;
       if (input.refreshToken) {
-        const tokenResult = await client.query<{ session_id: string }>(
+        const tokenResult = await client.query<{
+          session_id: string;
+          tenant_id: string | null;
+          user_id: string;
+        }>(
           `
-            SELECT session_id::text AS session_id
+            SELECT
+              refresh_tokens.session_id::text AS session_id,
+              auth_sessions.tenant_id::text AS tenant_id,
+              auth_sessions.user_id::text AS user_id
             FROM refresh_tokens
+            JOIN auth_sessions
+              ON auth_sessions.id = refresh_tokens.session_id
             WHERE token_hash = $1
             LIMIT 1
           `,
           [hashRefreshToken(input.refreshToken)],
         );
         sessionId = tokenResult.rows[0]?.session_id ?? sessionId;
+        auditActorUserId = tokenResult.rows[0]?.user_id ?? auditActorUserId;
+        auditSessionId = sessionId ?? auditSessionId;
+        auditTenantId = tokenResult.rows[0]?.tenant_id ?? auditTenantId;
 
         await client.query(
           `
@@ -646,6 +712,28 @@ export class AuthService {
       }
 
       await client.query("COMMIT");
+      if (auditTenantId) {
+        await safeRecordAuditLog(
+          {
+            action: "auth.logout",
+            actorType: auditActorUserId ? "user" : "system",
+            actorUserId: auditActorUserId,
+            ipHash: context.ipHash,
+            metadata: {
+              sessionId: auditSessionId ?? null,
+            },
+            requestId: context.requestId,
+            resourceId: auditSessionId ?? null,
+            resourceType: "auth_session",
+            tenantId: auditTenantId,
+            traceId: context.traceId,
+            userAgent: context.userAgent,
+          },
+          {
+            pool: this.pool,
+          },
+        );
+      }
       return { ok: true as const };
     } catch (error) {
       await client.query("ROLLBACK").catch(() => {});

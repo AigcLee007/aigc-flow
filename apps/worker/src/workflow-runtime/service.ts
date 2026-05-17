@@ -1,4 +1,10 @@
-import { BillingService, createPgPool, withTenantTransaction } from "@aigc-flow/db";
+import {
+  BillingService,
+  createPgPool,
+  safeRecordAuditLog,
+  type AuditLogInput,
+  withTenantTransaction,
+} from "@aigc-flow/db";
 import type {
   AiGatewayMediaResult,
   AiGatewayTextResult,
@@ -89,6 +95,7 @@ type ProviderPollQueueLike = {
 };
 
 type RuntimeExecutionResult = {
+  auditLogs: AuditLogInput[];
   errorToThrow?: Error;
   nodeEnqueuePayloads: NodeExecuteJobPayload[];
   pollEnqueuePayloads: Array<{
@@ -378,6 +385,7 @@ export class WorkflowNodeExecutionService {
     );
 
     await this.flushEnqueues(execution);
+    await this.flushAuditLogs(execution.auditLogs);
 
     if (execution.errorToThrow) {
       throw execution.errorToThrow;
@@ -401,6 +409,7 @@ export class WorkflowNodeExecutionService {
     );
 
     await this.flushEnqueues(execution);
+    await this.flushAuditLogs(execution.auditLogs);
 
     if (execution.errorToThrow) {
       throw execution.errorToThrow;
@@ -419,6 +428,14 @@ export class WorkflowNodeExecutionService {
       assertLightweightJobPayload(instruction.payload);
       await this.providerPollQueue.add(QUEUE_NAMES.providerPoll, instruction.payload, {
         delay: instruction.delayMs,
+      });
+    }
+  }
+
+  private async flushAuditLogs(auditLogs: AuditLogInput[]): Promise<void> {
+    for (const auditLog of auditLogs) {
+      await safeRecordAuditLog(auditLog, {
+        pool: this.pool,
       });
     }
   }
@@ -521,6 +538,7 @@ export class WorkflowNodeExecutionService {
           );
 
           return {
+            auditLogs: [],
             nodeEnqueuePayloads: [],
             pollEnqueuePayloads: [
               {
@@ -538,7 +556,7 @@ export class WorkflowNodeExecutionService {
           };
         }
 
-        const enqueuePayloads = await this.markNodeSucceededAndUnlockDependents(
+        const successResult = await this.markNodeSucceededAndUnlockDependents(
           client,
           currentNode,
           runtimeFlow,
@@ -551,7 +569,7 @@ export class WorkflowNodeExecutionService {
 
         logger.info(
           {
-            enqueuedNodeCount: enqueuePayloads.length,
+            enqueuedNodeCount: successResult.nodeEnqueuePayloads.length,
             nodeRunId: currentNodeRun.id,
             workflowRunId: workflowRun.id,
           },
@@ -559,7 +577,8 @@ export class WorkflowNodeExecutionService {
         );
 
         return {
-          nodeEnqueuePayloads: enqueuePayloads,
+          auditLogs: successResult.auditLogs,
+          nodeEnqueuePayloads: successResult.nodeEnqueuePayloads,
           pollEnqueuePayloads: [],
           processorResult: {
             jobId: null,
@@ -574,6 +593,7 @@ export class WorkflowNodeExecutionService {
         await this.failNodeAndWorkflow(client, workflowRun.id, currentNodeRun.id, input.tenantId, normalized);
 
         return {
+          auditLogs: [],
           errorToThrow: error instanceof Error ? error : new Error(String(error)),
           nodeEnqueuePayloads: [],
           pollEnqueuePayloads: [],
@@ -673,6 +693,7 @@ export class WorkflowNodeExecutionService {
           });
 
           return {
+            auditLogs: [],
             nodeEnqueuePayloads: [],
             pollEnqueuePayloads: [
               {
@@ -700,6 +721,7 @@ export class WorkflowNodeExecutionService {
           const normalized = normalizeError(pollResult.error ?? { message: "Provider task failed" });
           await this.failNodeAndWorkflow(client, workflowRun.id, currentNodeRun.id, input.tenantId, normalized);
           return {
+            auditLogs: [],
             errorToThrow: new Error(normalized.message),
             nodeEnqueuePayloads: [],
             pollEnqueuePayloads: [],
@@ -743,7 +765,7 @@ export class WorkflowNodeExecutionService {
           units: outputJson.assets && Array.isArray(outputJson.assets) ? outputJson.assets.length : 0,
           workflowRunId: workflowRun.id,
         });
-        const enqueuePayloads = await this.markNodeSucceededAndUnlockDependents(
+        const successResult = await this.markNodeSucceededAndUnlockDependents(
           client,
           currentNode,
           runtimeFlow,
@@ -756,7 +778,7 @@ export class WorkflowNodeExecutionService {
 
         logger.info(
           {
-            enqueuedNodeCount: enqueuePayloads.length,
+            enqueuedNodeCount: successResult.nodeEnqueuePayloads.length,
             nodeRunId: currentNodeRun.id,
             providerTaskId: input.providerTaskId,
             workflowRunId: workflowRun.id,
@@ -765,7 +787,8 @@ export class WorkflowNodeExecutionService {
         );
 
         return {
-          nodeEnqueuePayloads: enqueuePayloads,
+          auditLogs: successResult.auditLogs,
+          nodeEnqueuePayloads: successResult.nodeEnqueuePayloads,
           pollEnqueuePayloads: [],
           processorResult: {
             jobId: null,
@@ -779,6 +802,7 @@ export class WorkflowNodeExecutionService {
         const normalized = normalizeError(error);
         await this.failNodeAndWorkflow(client, workflowRun.id, currentNodeRun.id, input.tenantId, normalized);
         return {
+          auditLogs: [],
           errorToThrow: error instanceof Error ? error : new Error(String(error)),
           nodeEnqueuePayloads: [],
           pollEnqueuePayloads: [],
@@ -802,6 +826,7 @@ export class WorkflowNodeExecutionService {
     },
   ): RuntimeExecutionResult {
     return {
+      auditLogs: [],
       nodeEnqueuePayloads: [],
       pollEnqueuePayloads: [],
       processorResult: {
@@ -1272,8 +1297,9 @@ export class WorkflowNodeExecutionService {
   private async recordUsageForNode(
     client: PoolClient,
     tenantId: string,
+    traceId: string | null,
     input: UsageRecordInput,
-  ): Promise<void> {
+  ): Promise<AuditLogInput[]> {
     const usageEvent = await this.billingService.recordUsageEventWithClient(client, tenantId, {
       billableCents: input.billableCents,
       eventType: input.eventType,
@@ -1296,7 +1322,7 @@ export class WorkflowNodeExecutionService {
       workflowRunId: input.workflowRunId,
     });
 
-    await this.billingService.settleUsageWithClient(client, tenantId, {
+    const ledgerEntry = await this.billingService.settleUsageWithClient(client, tenantId, {
       amountCents: input.billableCents,
       description: `${input.eventType} settled`,
       idempotencyKey: `settle:${usageEvent.id}`,
@@ -1307,6 +1333,38 @@ export class WorkflowNodeExecutionService {
       },
       usageEventId: usageEvent.id,
     });
+
+    return [
+      {
+        action: "billing.usage.record",
+        actorType: "system",
+        actorUserId: null,
+        metadata: {
+          billableCents: usageEvent.billableCents,
+          modality: usageEvent.modality,
+          nodeRunId: usageEvent.nodeRunId,
+          workflowRunId: usageEvent.workflowRunId,
+        },
+        resourceId: usageEvent.id,
+        resourceType: "usage_event",
+        tenantId,
+        traceId,
+      },
+      {
+        action: "billing.ledger.settle",
+        actorType: "system",
+        actorUserId: null,
+        metadata: {
+          amountCents: ledgerEntry.amountCents,
+          entryType: ledgerEntry.entryType,
+          usageEventId: ledgerEntry.usageEventId,
+        },
+        resourceId: ledgerEntry.id,
+        resourceType: "billing_ledger",
+        tenantId,
+        traceId,
+      },
+    ];
   }
 
   private async markNodeSucceededAndUnlockDependents(
@@ -1318,9 +1376,18 @@ export class WorkflowNodeExecutionService {
     context: WorkflowExecutionContext,
     outputJson: Record<string, unknown>,
     usageRecord?: UsageRecordInput,
-  ): Promise<NodeExecuteJobPayload[]> {
+  ): Promise<{
+    auditLogs: AuditLogInput[];
+    nodeEnqueuePayloads: NodeExecuteJobPayload[];
+  }> {
+    let auditLogs: AuditLogInput[] = [];
     if (usageRecord) {
-      await this.recordUsageForNode(client, context.tenantId, usageRecord);
+      auditLogs = await this.recordUsageForNode(
+        client,
+        context.tenantId,
+        context.traceId,
+        usageRecord,
+      );
     }
 
     await client.query(
@@ -1372,7 +1439,10 @@ export class WorkflowNodeExecutionService {
       context.traceId,
     );
     await this.finalizeWorkflowRunIfComplete(client, workflowRun.id, context.tenantId);
-    return enqueuePayloads;
+    return {
+      auditLogs,
+      nodeEnqueuePayloads: enqueuePayloads,
+    };
   }
 
   private async enqueueReadyDependents(

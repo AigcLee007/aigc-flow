@@ -37,6 +37,7 @@ describeWithDatabase("runMigrations", () => {
           "000006_ai_gateway.sql",
           "000007_workflow_runs.sql",
           "000008_billing.sql",
+          "000009_audit_observability.sql",
         ]);
         expect(firstRun.skippedMigrations).toEqual([]);
 
@@ -47,7 +48,7 @@ describeWithDatabase("runMigrations", () => {
             ORDER BY version ASC
           `,
         );
-        expect(migrations.rows).toHaveLength(8);
+        expect(migrations.rows).toHaveLength(9);
         expect(migrations.rows.map((row) => row.filename)).toEqual([
           "000001_extensions.sql",
           "000002_iam.sql",
@@ -57,6 +58,7 @@ describeWithDatabase("runMigrations", () => {
           "000006_ai_gateway.sql",
           "000007_workflow_runs.sql",
           "000008_billing.sql",
+          "000009_audit_observability.sql",
         ]);
         for (const row of migrations.rows) {
           expect(row.checksum).toMatch(/^[a-f0-9]{64}$/);
@@ -73,10 +75,11 @@ describeWithDatabase("runMigrations", () => {
           "000006_ai_gateway.sql",
           "000007_workflow_runs.sql",
           "000008_billing.sql",
+          "000009_audit_observability.sql",
         ]);
 
         const count = await pool.query("SELECT COUNT(*)::int AS total FROM schema_migrations");
-        expect(count.rows[0]?.total).toBe(8);
+        expect(count.rows[0]?.total).toBe(9);
       } finally {
         await pool.end();
       }

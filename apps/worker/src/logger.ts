@@ -7,10 +7,16 @@ export type WorkerLogger = {
 
 function writeLog(level: "error" | "info", fields: WorkerLogFields, message: string): void {
   const entry = {
+    jobId: fields.jobId ?? null,
     level,
     message,
+    nodeRunId: fields.nodeRunId ?? null,
+    queueName: fields.queueName ?? null,
     service: "aigc-flow-v2-worker",
     timestamp: new Date().toISOString(),
+    tenantId: fields.tenantId ?? null,
+    traceId: fields.traceId ?? null,
+    workflowRunId: fields.workflowRunId ?? null,
     ...fields,
   };
 

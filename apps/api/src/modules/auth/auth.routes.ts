@@ -14,11 +14,6 @@ import {
 } from "./auth.schemas.js";
 import { AuthApiError } from "./auth.service.js";
 
-function getUserAgent(request: FastifyRequest): string | null {
-  const value = request.headers["user-agent"];
-  return typeof value === "string" && value.trim() ? value.trim() : null;
-}
-
 function sendError(
   request: FastifyRequest,
   reply: FastifyReply,
@@ -61,7 +56,16 @@ function handleRouteError(
     return sendError(request, reply, error.statusCode, error.code, error.message);
   }
 
-  request.log.error({ err: error }, "auth route failed");
+  request.log.error(
+    {
+      err: error,
+      requestId: request.ctx.requestId,
+      tenantId: request.ctx.tenantId,
+      traceId: request.ctx.traceId,
+      userId: request.ctx.userId,
+    },
+    "auth route failed",
+  );
   return sendError(request, reply, 500, "INTERNAL_ERROR", "Internal server error");
 }
 
@@ -71,7 +75,10 @@ export function registerAuthRoutes(app: FastifyInstance): void {
       const body = parseBody<RegisterInput>(request, registerSchema);
       const result = await app.authService.register(body, {
         ipAddress: request.ip,
-        userAgent: getUserAgent(request),
+        ipHash: request.ctx.ipHash,
+        requestId: request.ctx.requestId,
+        traceId: request.ctx.traceId,
+        userAgent: request.ctx.userAgent,
       });
       return reply.code(201).send(result);
     } catch (error) {
@@ -84,7 +91,10 @@ export function registerAuthRoutes(app: FastifyInstance): void {
       const body = parseBody<LoginInput>(request, loginSchema);
       const result = await app.authService.login(body, {
         ipAddress: request.ip,
-        userAgent: getUserAgent(request),
+        ipHash: request.ctx.ipHash,
+        requestId: request.ctx.requestId,
+        traceId: request.ctx.traceId,
+        userAgent: request.ctx.userAgent,
       });
       return reply.send(result);
     } catch (error) {

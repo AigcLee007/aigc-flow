@@ -1,4 +1,4 @@
-import { createPgPool, withTenantTransaction } from "@aigc-flow/db";
+import { createPgPool, safeRecordAuditLog, withTenantTransaction } from "@aigc-flow/db";
 import {
   AiGatewayError,
   DatabaseTextGenerationRuntime,
@@ -22,7 +22,11 @@ import type {
 type PgPool = Pool;
 
 type TenantContext = {
+  ipHash?: string | null;
+  requestId?: string | null;
   tenantId: string;
+  traceId?: string | null;
+  userAgent?: string | null;
   userId: string | null;
 };
 
@@ -284,7 +288,7 @@ export class AiGatewayAdminService {
     return result.rows.map(mapProvider);
   }
 
-  async createProvider(input: CreateProviderInput): Promise<ProviderView> {
+  async createProvider(context: TenantContext, input: CreateProviderInput): Promise<ProviderView> {
     try {
       const result = await this.pool.query<ProviderRecord>(
         `
@@ -319,7 +323,30 @@ export class AiGatewayAdminService {
         ],
       );
 
-      return mapProvider(result.rows[0]);
+      const provider = mapProvider(result.rows[0]);
+      await safeRecordAuditLog(
+        {
+          action: "ai.provider.create",
+          actorType: context.userId ? "user" : "system",
+          actorUserId: context.userId,
+          ipHash: context.ipHash,
+          metadata: {
+            key: provider.key,
+            kind: provider.kind,
+            status: provider.status,
+          },
+          requestId: context.requestId,
+          resourceId: provider.id,
+          resourceType: "ai_provider",
+          tenantId: context.tenantId,
+          traceId: context.traceId,
+          userAgent: context.userAgent,
+        },
+        {
+          pool: this.pool,
+        },
+      );
+      return provider;
     } catch (error) {
       this.rethrowKnownDatabaseError(error, "Unable to create provider");
     }
@@ -347,7 +374,7 @@ export class AiGatewayAdminService {
     return result.rows.map(mapModel);
   }
 
-  async createModel(input: CreateModelInput): Promise<ModelView> {
+  async createModel(context: TenantContext, input: CreateModelInput): Promise<ModelView> {
     await this.ensureProviderExists(input.providerId);
 
     try {
@@ -387,7 +414,31 @@ export class AiGatewayAdminService {
         ],
       );
 
-      return mapModel(result.rows[0]);
+      const model = mapModel(result.rows[0]);
+      await safeRecordAuditLog(
+        {
+          action: "ai.model.create",
+          actorType: context.userId ? "user" : "system",
+          actorUserId: context.userId,
+          ipHash: context.ipHash,
+          metadata: {
+            modality: model.modality,
+            modelKey: model.modelKey,
+            providerId: model.providerId,
+            status: model.status,
+          },
+          requestId: context.requestId,
+          resourceId: model.id,
+          resourceType: "ai_model",
+          tenantId: context.tenantId,
+          traceId: context.traceId,
+          userAgent: context.userAgent,
+        },
+        {
+          pool: this.pool,
+        },
+      );
+      return model;
     } catch (error) {
       this.rethrowKnownDatabaseError(error, "Unable to create model");
     }
@@ -508,7 +559,33 @@ export class AiGatewayAdminService {
           ],
         );
 
-        return mapRoute(result.rows[0]);
+        const route = mapRoute(result.rows[0]);
+        await safeRecordAuditLog(
+          {
+            action: "ai.route.create",
+            actorType: context.userId ? "user" : "system",
+            actorUserId: context.userId,
+            ipHash: context.ipHash,
+            metadata: {
+              credentialId: route.credentialId,
+              modality: route.modality,
+              modelId: route.modelId,
+              providerId: route.providerId,
+              routeKey: route.routeKey,
+              status: route.status,
+            },
+            requestId: context.requestId,
+            resourceId: route.id,
+            resourceType: "ai_route",
+            tenantId: context.tenantId,
+            traceId: context.traceId,
+            userAgent: context.userAgent,
+          },
+          {
+            pool: this.pool,
+          },
+        );
+        return route;
       } catch (error) {
         this.rethrowKnownDatabaseError(error, "Unable to create route");
       }
@@ -584,7 +661,34 @@ export class AiGatewayAdminService {
         throw new AiGatewayApiError(404, "ROUTE_NOT_FOUND", "Route not found");
       }
 
-      return mapRoute(row);
+      const route = mapRoute(row);
+      await safeRecordAuditLog(
+        {
+          action: "ai.route.update",
+          actorType: context.userId ? "user" : "system",
+          actorUserId: context.userId,
+          ipHash: context.ipHash,
+          metadata: {
+            credentialId: route.credentialId,
+            modality: route.modality,
+            modelId: route.modelId,
+            priority: route.priority,
+            routeKey: route.routeKey,
+            status: route.status,
+            weight: route.weight,
+          },
+          requestId: context.requestId,
+          resourceId: route.id,
+          resourceType: "ai_route",
+          tenantId: context.tenantId,
+          traceId: context.traceId,
+          userAgent: context.userAgent,
+        },
+        {
+          pool: this.pool,
+        },
+      );
+      return route;
     }, this.pool);
   }
 
@@ -686,7 +790,31 @@ export class AiGatewayAdminService {
           ],
         );
 
-        return this.mapCredential(result.rows[0]);
+        const credential = this.mapCredential(result.rows[0]);
+        await safeRecordAuditLog(
+          {
+            action: "credential.create",
+            actorType: context.userId ? "user" : "system",
+            actorUserId: context.userId,
+            ipHash: context.ipHash,
+            metadata: {
+              credentialId: credential.id,
+              maskedSecret: credential.maskedSecret,
+              providerId: credential.providerId,
+              status: credential.status,
+            },
+            requestId: context.requestId,
+            resourceId: credential.id,
+            resourceType: "credential",
+            tenantId: context.tenantId,
+            traceId: context.traceId,
+            userAgent: context.userAgent,
+          },
+          {
+            pool: this.pool,
+          },
+        );
+        return credential;
       } catch (error) {
         this.rethrowKnownDatabaseError(error, "Unable to create credential");
       }
@@ -784,7 +912,32 @@ export class AiGatewayAdminService {
         ],
       );
 
-      return this.mapCredential(result.rows[0]);
+      const credential = this.mapCredential(result.rows[0]);
+      await safeRecordAuditLog(
+        {
+          action: "credential.rotate",
+          actorType: context.userId ? "user" : "system",
+          actorUserId: context.userId,
+          ipHash: context.ipHash,
+          metadata: {
+            credentialId: credential.id,
+            maskedSecret: credential.maskedSecret,
+            providerId: credential.providerId,
+            rotatedAt: credential.rotatedAt,
+            status: credential.status,
+          },
+          requestId: context.requestId,
+          resourceId: credential.id,
+          resourceType: "credential",
+          tenantId: context.tenantId,
+          traceId: context.traceId,
+          userAgent: context.userAgent,
+        },
+        {
+          pool: this.pool,
+        },
+      );
+      return credential;
     }, this.pool);
   }
 
@@ -805,6 +958,26 @@ export class AiGatewayAdminService {
         throw new AiGatewayApiError(404, "CREDENTIAL_NOT_FOUND", "Credential not found");
       }
 
+      await safeRecordAuditLog(
+        {
+          action: "credential.delete",
+          actorType: context.userId ? "user" : "system",
+          actorUserId: context.userId,
+          ipHash: context.ipHash,
+          metadata: {
+            credentialId,
+          },
+          requestId: context.requestId,
+          resourceId: credentialId,
+          resourceType: "credential",
+          tenantId: context.tenantId,
+          traceId: context.traceId,
+          userAgent: context.userAgent,
+        },
+        {
+          pool: this.pool,
+        },
+      );
       return { ok: true as const };
     }, this.pool);
   }

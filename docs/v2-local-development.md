@@ -69,6 +69,9 @@ The current Fastify v2 service exposes:
 - `GET /api/v2/billing/summary`
 - `GET /api/v2/billing/usage-events`
 - `GET /api/v2/billing/ledger`
+- `GET /api/v2/audit/logs`
+- `GET /api/v2/admin/health`
+- `GET /api/v2/admin/metrics`
 
 By default it listens on `http://localhost:3366`.
 
@@ -363,6 +366,96 @@ Current PR-15 limits:
 - PR-15 does not remove legacy MySQL / JSON / local-storage paths
 - PR-17 remains the phase for legacy runtime removal
 
+## PR-16 audit logs and observability
+
+PR-16 adds the first tenant-scoped audit log table and the current base
+observability endpoints for the v2 backend:
+
+- `000009_audit_observability.sql`
+- PostgreSQL `audit_logs`
+- `GET /api/v2/audit/logs`
+- `GET /api/v2/admin/health`
+- `GET /api/v2/admin/metrics`
+- API request context propagation for:
+  - `x-request-id`
+  - `x-trace-id`
+- API structured request logs with:
+  - `requestId`
+  - `traceId`
+  - `tenantId`
+  - `userId`
+- worker JSON logs normalized around:
+  - `jobId`
+  - `queueName`
+  - `tenantId`
+  - `traceId`
+  - `workflowRunId`
+  - `nodeRunId`
+
+Current PR-16 audit coverage:
+
+- auth:
+  - `auth.register`
+  - `auth.login`
+  - `auth.logout`
+- AI / credentials:
+  - `ai.provider.create`
+  - `ai.model.create`
+  - `ai.route.create`
+  - `ai.route.update`
+  - `credential.create`
+  - `credential.rotate`
+  - `credential.delete`
+- workflow:
+  - `workflow.run.create`
+  - `workflow.run.cancel`
+- assets:
+  - `asset.presigned_upload.create`
+  - `asset.complete_upload`
+  - `asset.delete`
+- worker billing path:
+  - `billing.usage.record`
+  - `billing.ledger.settle`
+
+Audit log rules in this phase:
+
+- `audit_logs` is append-only for normal tenant application roles
+- audit listing is tenant-scoped and requires `audit:read`
+- audit metadata is sanitized before insert
+- plaintext secrets, password hashes, token hashes, authorization headers,
+  raw provider payloads, prompts, and base64 blobs are not stored in audit
+  metadata
+
+Health and metrics notes:
+
+- `GET /api/v2/admin/health` requires:
+  - auth
+  - tenant context
+  - `admin:system`
+- `GET /api/v2/admin/metrics` requires:
+  - auth
+  - tenant context
+  - `admin:system`
+- health returns:
+  - API uptime
+  - timestamp
+  - database status
+  - Redis / queue health summary
+- metrics returns JSON only in this phase:
+  - process uptime
+  - memory usage
+  - queue counts
+  - current-tenant workflow run totals
+
+Current PR-16 limits:
+
+- no external APM or SaaS logging SDK is installed
+- no Prometheus exporter format is exposed yet
+- no complex distributed tracing is implemented
+- workflow run event rows still do not persist `trace_id`
+- legacy runtime removal is still out of scope
+- PR-17 remains the phase for legacy production entry cleanup
+
 ## Configure `DATABASE_URL`
 
 Copy `.env.v2.example` or export the variable directly before running
@@ -556,6 +649,7 @@ Current migrations:
 - `000006_ai_gateway.sql`
 - `000007_workflow_runs.sql`
 - `000008_billing.sql`
+- `000009_audit_observability.sql`
 
 `000001_extensions.sql` installs:
 
@@ -607,6 +701,12 @@ schema:
 - `billing_accounts`
 - `usage_events`
 - `billing_ledger`
+
+`000009_audit_observability.sql` adds:
+
+- `audit_logs`
+- tenant-scoped RLS for audit log reads and inserts
+- append-only tenant behavior by omitting update / delete policies
 
 PR-03 and PR-04 also introduce PostgreSQL helper functions for request context
 and the current base RLS policies for tenant-scoped tables.

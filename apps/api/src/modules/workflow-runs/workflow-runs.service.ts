@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 
-import { createPgPool, withTenantTransaction } from "@aigc-flow/db";
+import { createPgPool, safeRecordAuditLog, withTenantTransaction } from "@aigc-flow/db";
 import {
   QUEUE_NAMES,
   assertLightweightJobPayload,
@@ -12,8 +12,11 @@ import type { Pool, PoolClient } from "pg";
 type PgPool = Pool;
 
 type WorkflowRunContext = {
+  ipHash?: string | null;
+  requestId?: string | null;
   tenantId: string;
   traceId?: string | null;
+  userAgent?: string | null;
   userId: string | null;
 };
 
@@ -400,6 +403,29 @@ export class WorkflowRunsService {
       await this.nodeExecuteQueue.add(QUEUE_NAMES.nodeExecute, payload);
     }
 
+    await safeRecordAuditLog(
+      {
+        action: "workflow.run.create",
+        actorType: context.userId ? "user" : "system",
+        actorUserId: context.userId,
+        ipHash: context.ipHash,
+        metadata: {
+          flowId,
+          idempotencyKey: input.idempotencyKey ?? null,
+          status: createdRun.status,
+        },
+        requestId: context.requestId,
+        resourceId: createdRun.id,
+        resourceType: "workflow_run",
+        tenantId: context.tenantId,
+        traceId: context.traceId,
+        userAgent: context.userAgent,
+      },
+      {
+        pool: this.pool,
+      },
+    );
+
     return {
       runId: createdRun.id,
       status: createdRun.status,
@@ -486,10 +512,13 @@ export class WorkflowRunsService {
     context: WorkflowRunContext,
     runId: string,
   ): Promise<WorkflowRunView> {
-    return withTenantTransaction(context, async (client) => {
+    const result = await withTenantTransaction(context, async (client) => {
       const current = await this.getWorkflowRunOrThrow(client, runId, true);
       if (isTerminalRunStatus(current.status)) {
-        return current;
+        return {
+          didCancel: false,
+          workflowRun: current,
+        };
       }
 
       const updated = await client.query<WorkflowRunRecord>(
@@ -530,8 +559,36 @@ export class WorkflowRunsService {
         workflowRunId: runId,
       });
 
-      return mapWorkflowRun(updated.rows[0]);
+      return {
+        didCancel: true,
+        workflowRun: mapWorkflowRun(updated.rows[0]),
+      };
     }, this.pool);
+
+    if (result.didCancel) {
+      await safeRecordAuditLog(
+        {
+          action: "workflow.run.cancel",
+          actorType: context.userId ? "user" : "system",
+          actorUserId: context.userId,
+          ipHash: context.ipHash,
+          metadata: {
+            status: result.workflowRun.status,
+          },
+          requestId: context.requestId,
+          resourceId: result.workflowRun.id,
+          resourceType: "workflow_run",
+          tenantId: context.tenantId,
+          traceId: context.traceId,
+          userAgent: context.userAgent,
+        },
+        {
+          pool: this.pool,
+        },
+      );
+    }
+
+    return result.workflowRun;
   }
 
   async getWorkflowRunStatus(

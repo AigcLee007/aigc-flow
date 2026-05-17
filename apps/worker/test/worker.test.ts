@@ -135,6 +135,13 @@ function createTestLogger(): WorkerLogger {
   };
 }
 
+function createSpyLogger() {
+  return {
+    error: vi.fn(),
+    info: vi.fn(),
+  } satisfies WorkerLogger;
+}
+
 async function countBillingState(
   pool: ReturnType<typeof createPgPool>,
   tenantId: string,
@@ -553,6 +560,61 @@ describe("worker skeleton", () => {
     });
   });
 
+  test("worker processor logs include traceId, tenantId, queueName, and jobId", async () => {
+    const logger = createSpyLogger();
+
+    await processNodeExecuteJob(
+      {
+        data: {
+          nodeRunId: "node-1",
+          tenantId: "tenant-1",
+          traceId: "trace-1",
+          workflowRunId: "run-1",
+        },
+        id: "job-1",
+        queueName: QUEUE_NAMES.nodeExecute,
+      } as never,
+      logger,
+      {
+        executionService: {
+          async executeNode() {
+            return {
+              jobId: null,
+              queueName: QUEUE_NAMES.nodeExecute,
+              status: "ok" as const,
+              tenantId: "tenant-1",
+              traceId: "trace-1",
+            };
+          },
+        } as never,
+      },
+    );
+
+    expect(logger.info).toHaveBeenCalledWith(
+      expect.objectContaining({
+        jobId: "job-1",
+        nodeRunId: "node-1",
+        queueName: QUEUE_NAMES.nodeExecute,
+        tenantId: "tenant-1",
+        traceId: "trace-1",
+        workflowRunId: "run-1",
+      }),
+      "processing node.execute job",
+    );
+    expect(logger.info).toHaveBeenCalledWith(
+      expect.objectContaining({
+        jobId: "job-1",
+        nodeRunId: "node-1",
+        queueName: QUEUE_NAMES.nodeExecute,
+        status: "ok",
+        tenantId: "tenant-1",
+        traceId: "trace-1",
+        workflowRunId: "run-1",
+      }),
+      "completed node.execute job",
+    );
+  });
+
   test("graceful shutdown closes worker resources", async () => {
     const workerClose = vi.fn(async () => {});
     const eventsClose = vi.fn(async () => {});
@@ -599,6 +661,103 @@ describe("worker skeleton", () => {
 });
 
 describeWithDatabase("workflow node execution", () => {
+  test("text node execution records billing audit logs without prompt leakage", async () => {
+    await withDatabase(async ({ createAppDatabaseUrl, databaseUrl }) => {
+      process.env.DATABASE_URL = databaseUrl;
+      const adminPool = createPgPool();
+      let appPool = createPgPool();
+
+      try {
+        await runMigrations(adminPool);
+        appPool = createPgPool({
+          connectionString: await createAppDatabaseUrl(),
+        });
+
+        const seeded = await seedWorkflowRuntime(appPool, {
+          inputNodeOutputJson: {
+            prompt: "sensitive prompt text",
+          },
+          inputNodeStatus: "succeeded",
+          middleNodeStatus: "runnable",
+        });
+        const nodeQueue = createFakeNodeExecuteQueue();
+        const pollQueue = createFakeProviderPollQueue();
+        const service = createWorkflowService({
+          nodeQueue,
+          pollQueue,
+          pool: appPool,
+          storageProvider: new MemoryStorageProvider(),
+          textGenerationRuntime: {
+            async generateText() {
+              return {
+                modelKey: "mock-model",
+                outputText: "generated text",
+                providerKey: "mock-provider",
+                providerRequest: {
+                  prompt: "sensitive prompt text",
+                },
+                providerResponse: {
+                  base64: "should-not-appear",
+                },
+                status: "succeeded" as const,
+                usage: {
+                  inputTokens: 2,
+                  outputTokens: 3,
+                  totalTokens: 5,
+                },
+              };
+            },
+          },
+        });
+
+        await processNodeExecuteJob(
+          {
+            data: {
+              nodeRunId: seeded.middleNodeRunId,
+              tenantId: seeded.tenantId,
+              traceId: "trace-audit",
+              workflowRunId: seeded.workflowRunId,
+            },
+            id: "job-audit",
+            queueName: QUEUE_NAMES.nodeExecute,
+          } as never,
+          createTestLogger(),
+          { executionService: service },
+        );
+
+        const auditRows = await withTenantTransaction(
+          { tenantId: seeded.tenantId, userId: seeded.userId },
+          async (client) => {
+            const result = await client.query<{
+              action: string;
+              metadata: Record<string, unknown>;
+            }>(
+              `
+                SELECT action, metadata
+                FROM audit_logs
+                ORDER BY created_at ASC, id ASC
+              `,
+            );
+            return result.rows;
+          },
+          appPool,
+        );
+
+        expect(auditRows.map((row) => row.action)).toEqual([
+          "billing.usage.record",
+          "billing.ledger.settle",
+        ]);
+        const serialized = JSON.stringify(auditRows);
+        expect(serialized).not.toContain("sensitive prompt text");
+        expect(serialized).not.toContain("should-not-appear");
+        expect(serialized).not.toContain("base64");
+      } finally {
+        await appPool.end();
+        await adminPool.end();
+      }
+    });
+  });
+
   test("input node succeeds and downstream node is enqueued with ID-only payload", async () => {
     await withDatabase(async ({ createAppDatabaseUrl, databaseUrl }) => {
       process.env.DATABASE_URL = databaseUrl;

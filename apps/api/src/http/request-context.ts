@@ -1,9 +1,13 @@
 import { randomUUID } from "node:crypto";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 
+import { hashAuditIpAddress } from "@aigc-flow/db";
+
 import type { AuthService } from "../modules/auth/auth.service.js";
+import { logApiRequestStart } from "../observability/logger.js";
 
 export type RequestContext = {
+  ipHash: string | null;
   isAuthenticated: boolean;
   permissions: string[];
   requestId: string;
@@ -11,11 +15,18 @@ export type RequestContext = {
   sessionId: string | null;
   tenantId: string | null;
   traceId: string;
+  userAgent: string | null;
   userId: string | null;
 };
 
-function buildAnonymousContext(requestId: string, traceId: string): RequestContext {
+function buildAnonymousContext(
+  requestId: string,
+  traceId: string,
+  ipHash: string | null,
+  userAgent: string | null,
+): RequestContext {
   return {
+    ipHash,
     isAuthenticated: false,
     permissions: [],
     requestId,
@@ -23,6 +34,7 @@ function buildAnonymousContext(requestId: string, traceId: string): RequestConte
     sessionId: null,
     tenantId: null,
     traceId,
+    userAgent,
     userId: null,
   };
 }
@@ -41,12 +53,20 @@ function getBearerToken(request: FastifyRequest): string | null {
   return token.trim() || null;
 }
 
-function getRequestId(request: FastifyRequest): string {
-  const headerValue = request.headers["x-request-id"];
+function getTraceId(request: FastifyRequest): string {
+  const headerValue = request.headers["x-trace-id"];
   if (typeof headerValue === "string" && headerValue.trim()) {
     return headerValue.trim();
   }
   return randomUUID();
+}
+
+function getUserAgent(request: FastifyRequest): string | null {
+  const headerValue = request.headers["user-agent"];
+  if (typeof headerValue === "string" && headerValue.trim()) {
+    return headerValue.trim();
+  }
+  return null;
 }
 
 export function registerRequestContext(
@@ -63,9 +83,11 @@ export function registerRequestContext(
   });
 
   app.addHook("onRequest", async (request: FastifyRequest, reply: FastifyReply) => {
-    const requestId = getRequestId(request);
-    const traceId = randomUUID();
-    const baseContext = buildAnonymousContext(requestId, traceId);
+    const requestId = request.id;
+    const traceId = getTraceId(request);
+    const userAgent = getUserAgent(request);
+    const ipHash = hashAuditIpAddress(request.ip);
+    const baseContext = buildAnonymousContext(requestId, traceId, ipHash, userAgent);
     const token = getBearerToken(request);
 
     reply.header("x-request-id", requestId);
@@ -73,6 +95,7 @@ export function registerRequestContext(
 
     if (!token) {
       request.ctx = baseContext;
+      logApiRequestStart(request.log, request);
       return;
     }
 
@@ -86,5 +109,6 @@ export function registerRequestContext(
           traceId,
         }
       : baseContext;
+    logApiRequestStart(request.log, request);
   });
 }

@@ -14,7 +14,36 @@ export async function processProviderPollJob(
   },
 ): Promise<ProcessorResult> {
   if (options?.executionService) {
-    return options.executionService.pollProviderTask(job.data, logger);
+    logger.info(
+      {
+        jobId: job.id ?? null,
+        nodeRunId: job.data.nodeRunId,
+        providerTaskId: job.data.providerTaskId,
+        queueName: job.queueName,
+        tenantId: job.data.tenantId,
+        traceId: job.data.traceId ?? null,
+        workflowRunId: job.data.workflowRunId,
+      },
+      "processing provider.poll job",
+    );
+    const result = await options.executionService.pollProviderTask(job.data, logger);
+    logger.info(
+      {
+        jobId: job.id ?? null,
+        nodeRunId: job.data.nodeRunId,
+        providerTaskId: job.data.providerTaskId,
+        queueName: job.queueName,
+        status: result.status,
+        tenantId: job.data.tenantId,
+        traceId: job.data.traceId ?? null,
+        workflowRunId: job.data.workflowRunId,
+      },
+      "completed provider.poll job",
+    );
+    return {
+      ...result,
+      jobId: job.id ?? null,
+    };
   }
 
   const result: ProcessorResult = {

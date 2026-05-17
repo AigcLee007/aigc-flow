@@ -64,7 +64,11 @@ function getTenantContext(request: FastifyRequest) {
   }
 
   return {
+    ipHash: request.ctx.ipHash,
+    requestId: request.ctx.requestId,
     tenantId: request.ctx.tenantId,
+    traceId: request.ctx.traceId,
+    userAgent: request.ctx.userAgent,
     userId: request.ctx.userId,
   };
 }
@@ -93,7 +97,16 @@ function handleRouteError(
     return sendError(request, reply, error.statusCode, error.code, error.message);
   }
 
-  request.log.error({ err: error }, "ai gateway admin route failed");
+  request.log.error(
+    {
+      err: error,
+      requestId: request.ctx.requestId,
+      tenantId: request.ctx.tenantId,
+      traceId: request.ctx.traceId,
+      userId: request.ctx.userId,
+    },
+    "ai gateway admin route failed",
+  );
   return sendError(request, reply, 500, "INTERNAL_ERROR", "Internal server error");
 }
 
@@ -137,7 +150,7 @@ export function registerAiGatewayAdminRoutes(app: FastifyInstance): void {
     async (request, reply) => {
       try {
         const body = parseBody<CreateProviderInput>(request, createProviderSchema);
-        return reply.code(201).send(await app.aiGatewayService.createProvider(body));
+        return reply.code(201).send(await app.aiGatewayService.createProvider(getTenantContext(request), body));
       } catch (error) {
         return handleRouteError(error, request, reply);
       }
@@ -166,7 +179,7 @@ export function registerAiGatewayAdminRoutes(app: FastifyInstance): void {
     async (request, reply) => {
       try {
         const body = parseBody<CreateModelInput>(request, createModelSchema);
-        return reply.code(201).send(await app.aiGatewayService.createModel(body));
+        return reply.code(201).send(await app.aiGatewayService.createModel(getTenantContext(request), body));
       } catch (error) {
         return handleRouteError(error, request, reply);
       }

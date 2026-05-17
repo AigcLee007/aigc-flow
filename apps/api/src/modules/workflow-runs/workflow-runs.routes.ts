@@ -95,8 +95,11 @@ function getWorkflowRunContext(request: FastifyRequest) {
   }
 
   return {
+    ipHash: request.ctx.ipHash,
+    requestId: request.ctx.requestId,
     tenantId: request.ctx.tenantId,
     traceId: request.ctx.traceId,
+    userAgent: request.ctx.userAgent,
     userId: request.ctx.userId,
   };
 }
@@ -121,7 +124,16 @@ function handleRouteError(
     return sendError(request, reply, error.statusCode, error.code, error.message);
   }
 
-  request.log.error({ err: error }, "workflow runs route failed");
+  request.log.error(
+    {
+      err: error,
+      requestId: request.ctx.requestId,
+      tenantId: request.ctx.tenantId,
+      traceId: request.ctx.traceId,
+      userId: request.ctx.userId,
+    },
+    "workflow runs route failed",
+  );
   return sendError(request, reply, 500, "INTERNAL_ERROR", "Internal server error");
 }
 

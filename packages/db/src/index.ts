@@ -1,5 +1,17 @@
 export { createPgPool, getDatabaseUrl } from "./db.js";
 export {
+  hashAuditIpAddress,
+  listAuditLogs,
+  recordAuditLog,
+  recordAuditLogWithClient,
+  safeRecordAuditLog,
+  sanitizeAuditMetadata,
+  type AuditActorType,
+  type AuditListOptions,
+  type AuditLogInput,
+  type AuditLogView,
+} from "./audit.js";
+export {
   BillingService,
   BillingServiceError,
   type BillingAccountView,

@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 
-import { createPgPool, withTenantTransaction } from "@aigc-flow/db";
+import { createPgPool, safeRecordAuditLog, withTenantTransaction } from "@aigc-flow/db";
 import {
   buildAssetObjectKey,
   type StorageProvider,
@@ -12,7 +12,11 @@ import type { CompleteUploadInput, PresignedUploadInput } from "./assets.schemas
 type PgPool = Pool;
 
 type AssetContext = {
+  ipHash?: string | null;
+  requestId?: string | null;
   tenantId: string;
+  traceId?: string | null;
+  userAgent?: string | null;
   userId: string | null;
 };
 
@@ -297,15 +301,41 @@ export class AssetsService {
         key: objectKey,
       });
 
-      return {
+      const response = {
         asset: mapAsset(created.rows[0], []),
         upload: {
           expiresAt: upload.expiresAt,
           headers: upload.headers,
-          method: "PUT",
+          method: "PUT" as const,
           url: upload.url,
         },
       };
+
+      await safeRecordAuditLog(
+        {
+          action: "asset.presigned_upload.create",
+          actorType: context.userId ? "user" : "system",
+          actorUserId: context.userId,
+          ipHash: context.ipHash,
+          metadata: {
+            kind: response.asset.kind,
+            mimeType: response.asset.mimeType,
+            projectId: response.asset.projectId,
+            status: response.asset.status,
+          },
+          requestId: context.requestId,
+          resourceId: response.asset.id,
+          resourceType: "asset",
+          tenantId: context.tenantId,
+          traceId: context.traceId,
+          userAgent: context.userAgent,
+        },
+        {
+          pool: this.pool,
+        },
+      );
+
+      return response;
     }, this.pool);
   }
 
@@ -369,7 +399,31 @@ export class AssetsService {
         ],
       );
 
-      return mapAsset(updated.rows[0], await this.listVariants(client, assetId));
+      const assetView = mapAsset(updated.rows[0], await this.listVariants(client, assetId));
+      await safeRecordAuditLog(
+        {
+          action: "asset.complete_upload",
+          actorType: context.userId ? "user" : "system",
+          actorUserId: context.userId,
+          ipHash: context.ipHash,
+          metadata: {
+            mimeType: assetView.mimeType,
+            sizeBytes: assetView.sizeBytes,
+            status: assetView.status,
+          },
+          requestId: context.requestId,
+          resourceId: assetView.id,
+          resourceType: "asset",
+          tenantId: context.tenantId,
+          traceId: context.traceId,
+          userAgent: context.userAgent,
+        },
+        {
+          pool: this.pool,
+        },
+      );
+
+      return assetView;
     }, this.pool);
   }
 
@@ -440,6 +494,27 @@ export class AssetsService {
       if (!result.rows[0]?.id) {
         throw new AssetsApiError(404, "ASSET_NOT_FOUND", "Asset not found");
       }
+
+      await safeRecordAuditLog(
+        {
+          action: "asset.delete",
+          actorType: context.userId ? "user" : "system",
+          actorUserId: context.userId,
+          ipHash: context.ipHash,
+          metadata: {
+            assetId,
+          },
+          requestId: context.requestId,
+          resourceId: assetId,
+          resourceType: "asset",
+          tenantId: context.tenantId,
+          traceId: context.traceId,
+          userAgent: context.userAgent,
+        },
+        {
+          pool: this.pool,
+        },
+      );
 
       return { ok: true as const };
     }, this.pool);

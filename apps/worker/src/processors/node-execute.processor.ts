@@ -14,7 +14,34 @@ export async function processNodeExecuteJob(
   },
 ): Promise<ProcessorResult> {
   if (options?.executionService) {
-    return options.executionService.executeNode(job.data, logger);
+    logger.info(
+      {
+        jobId: job.id ?? null,
+        nodeRunId: job.data.nodeRunId,
+        queueName: job.queueName,
+        tenantId: job.data.tenantId,
+        traceId: job.data.traceId ?? null,
+        workflowRunId: job.data.workflowRunId,
+      },
+      "processing node.execute job",
+    );
+    const result = await options.executionService.executeNode(job.data, logger);
+    logger.info(
+      {
+        jobId: job.id ?? null,
+        nodeRunId: job.data.nodeRunId,
+        queueName: job.queueName,
+        status: result.status,
+        tenantId: job.data.tenantId,
+        traceId: job.data.traceId ?? null,
+        workflowRunId: job.data.workflowRunId,
+      },
+      "completed node.execute job",
+    );
+    return {
+      ...result,
+      jobId: job.id ?? null,
+    };
   }
 
   const result: ProcessorResult = {

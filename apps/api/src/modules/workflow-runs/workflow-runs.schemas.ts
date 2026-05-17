@@ -17,7 +17,12 @@ export const workflowRunEventsQuerySchema = z.object({
   afterSequence: z.coerce.number().int().nonnegative().optional(),
 });
 
+export const workflowRunStreamQuerySchema = z.object({
+  afterSequence: z.coerce.number().int().nonnegative().optional(),
+});
+
 export type CreateWorkflowRunInput = z.infer<typeof createWorkflowRunSchema>;
 export type FlowIdParams = z.infer<typeof flowIdParamsSchema>;
 export type RunIdParams = z.infer<typeof runIdParamsSchema>;
 export type WorkflowRunEventsQuery = z.infer<typeof workflowRunEventsQuerySchema>;
+export type WorkflowRunStreamQuery = z.infer<typeof workflowRunStreamQuerySchema>;

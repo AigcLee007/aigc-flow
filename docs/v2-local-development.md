@@ -64,6 +64,7 @@ The current Fastify v2 service exposes:
 - `POST /api/v2/flows/:flowId/runs`
 - `GET /api/v2/workflow-runs/:runId`
 - `GET /api/v2/workflow-runs/:runId/events`
+- `GET /api/v2/workflow-runs/:runId/stream`
 - `POST /api/v2/workflow-runs/:runId/cancel`
 
 By default it listens on `http://localhost:3366`.
@@ -119,6 +120,29 @@ Current PR-10 limits:
 - billing reserve / settle / refund are not implemented yet
 - provider polling remains a later phase
 - worker retries stay minimal in this phase
+
+## PR-11 workflow run SSE streaming
+
+PR-11 adds the first workflow run SSE endpoint:
+
+- `GET /api/v2/workflow-runs/:runId/stream`
+- event replay sourced from `workflow_run_events`
+- resume support via `afterSequence` or `Last-Event-ID`
+- keepalive comments for long-lived clients
+
+Current PR-11 behavior:
+
+- `afterSequence` takes priority when both cursor sources are present
+- if `afterSequence` is absent, the API falls back to `Last-Event-ID`
+- the stream replays historical events first and then polls PostgreSQL for new ones
+- the implementation releases database resources after each poll and does not hold a transaction open for the life of the connection
+
+Current PR-11 limits:
+
+- this phase uses PostgreSQL polling rather than Redis pub/sub
+- frontend stream wiring is not implemented yet
+- image/video execution remains deferred to PR-12
+- billing remains out of scope
 
 ## Configure `DATABASE_URL`
 
@@ -425,6 +449,7 @@ These cover:
 - workflow run creation
 - workflow run reads with `node_runs`
 - workflow run event listing with `afterSequence`
+- workflow run SSE replay and resume behavior
 - workflow run cancel behavior
 
 You can also run the standalone workflow compiler tests:

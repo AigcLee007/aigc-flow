@@ -95,6 +95,11 @@ export type WorkflowRunView = {
   updatedAt: string;
 };
 
+export type WorkflowRunStatusView = Pick<
+  WorkflowRunView,
+  "canceledAt" | "finishedAt" | "id" | "status" | "tenantId"
+>;
+
 export type NodeRunView = {
   attempt: number;
   costJson: Record<string, unknown>;
@@ -527,6 +532,26 @@ export class WorkflowRunsService {
 
       return mapWorkflowRun(updated.rows[0]);
     }, this.pool);
+  }
+
+  async getWorkflowRunStatus(
+    context: WorkflowRunContext,
+    runId: string,
+  ): Promise<WorkflowRunStatusView> {
+    return withTenantTransaction(context, async (client) => {
+      const workflowRun = await this.getWorkflowRunOrThrow(client, runId);
+      return {
+        canceledAt: workflowRun.canceledAt,
+        finishedAt: workflowRun.finishedAt,
+        id: workflowRun.id,
+        status: workflowRun.status,
+        tenantId: workflowRun.tenantId,
+      };
+    }, this.pool);
+  }
+
+  isTerminalWorkflowRunStatus(status: string): boolean {
+    return isTerminalRunStatus(status);
   }
 
   private async appendWorkflowRunEvent(

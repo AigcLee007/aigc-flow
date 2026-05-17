@@ -40,15 +40,19 @@ export type VideoGenerationRequest = {
 export type AiGatewayUsage = {
   inputTokens: number | null;
   outputTokens: number | null;
+  rawCost?: string | number | null;
   totalTokens: number | null;
 };
 
 export type AiGatewayTextResult = {
+  modelId?: string | null;
   modelKey: string;
   outputText: string;
+  providerId?: string | null;
   providerKey: string;
   providerRequest: unknown;
   providerResponse: unknown;
+  routeId?: string | null;
   status: "succeeded";
   usage: AiGatewayUsage;
 };
@@ -90,11 +94,14 @@ export type ProviderTextGenerationResult = {
 };
 
 export type ProviderMediaGenerationResult = {
+  modelId?: string | null;
   modelKey: string;
   outputs?: MediaOutput[] | null;
   providerRequest: unknown;
   providerResponse: unknown;
+  providerId?: string | null;
   providerTaskId?: string | null;
+  routeId?: string | null;
   status: "succeeded" | "waiting_provider";
   usage: AiGatewayUsage;
 };
@@ -102,23 +109,29 @@ export type ProviderMediaGenerationResult = {
 export type ProviderTaskResult = {
   error?: Record<string, unknown> | null;
   mimeType?: string | null;
+  modelId?: string | null;
   outputBase64?: string[] | null;
   outputUrls?: string[] | null;
   outputs?: MediaOutput[] | null;
+  providerId?: string | null;
   providerRequest?: unknown;
   providerResponse?: unknown;
   providerTaskId?: string | null;
+  routeId?: string | null;
   status: "pending" | "running" | "succeeded" | "failed";
   usage?: AiGatewayUsage | null;
 };
 
 export type AiGatewayMediaResult = {
+  modelId?: string | null;
   modelKey: string;
   outputs?: MediaOutput[] | null;
+  providerId?: string | null;
   providerKey: string;
   providerRequest: unknown;
   providerResponse: unknown;
   providerTaskId?: string | null;
+  routeId?: string | null;
   status: "succeeded" | "waiting_provider" | "failed";
   usage?: AiGatewayUsage | null;
 };

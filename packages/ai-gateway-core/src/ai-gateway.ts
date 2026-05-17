@@ -37,11 +37,14 @@ export class AiGateway {
     const result = await adapter.generateText(context, options.request);
 
     return {
+      modelId: options.route.model.id,
       modelKey: result.modelKey,
       outputText: result.outputText,
+      providerId: options.route.provider.id,
       providerKey: options.route.provider.key,
       providerRequest: result.providerRequest,
       providerResponse: result.providerResponse,
+      routeId: options.route.routeId,
       status: "succeeded",
       usage: result.usage,
     };
@@ -64,12 +67,15 @@ export class AiGateway {
 
     const result = await adapter.generateImage(context, options.request);
     return {
+      modelId: options.route.model.id,
       modelKey: result.modelKey,
       outputs: result.outputs ?? [],
+      providerId: options.route.provider.id,
       providerKey: options.route.provider.key,
       providerRequest: result.providerRequest,
       providerResponse: result.providerResponse,
       providerTaskId: result.providerTaskId ?? null,
+      routeId: options.route.routeId,
       status: result.status,
       usage: result.usage,
     };
@@ -92,12 +98,15 @@ export class AiGateway {
 
     const result = await adapter.generateVideo(context, options.request);
     return {
+      modelId: options.route.model.id,
       modelKey: result.modelKey,
       outputs: result.outputs ?? [],
+      providerId: options.route.provider.id,
       providerKey: options.route.provider.key,
       providerRequest: result.providerRequest,
       providerResponse: result.providerResponse,
       providerTaskId: result.providerTaskId ?? null,
+      routeId: options.route.routeId,
       status: result.status,
       usage: result.usage,
     };
@@ -118,7 +127,13 @@ export class AiGateway {
       throw this.unsupportedOperationError(options.route.provider.kind, "task polling");
     }
 
-    return adapter.pollTask(context, options.request);
+    const result = await adapter.pollTask(context, options.request);
+    return {
+      ...result,
+      modelId: options.route.model.id,
+      providerId: options.route.provider.id,
+      routeId: options.route.routeId,
+    };
   }
 
   private createProviderContext(

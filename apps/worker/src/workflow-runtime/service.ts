@@ -1,4 +1,4 @@
-import { createPgPool, withTenantTransaction } from "@aigc-flow/db";
+import { BillingService, createPgPool, withTenantTransaction } from "@aigc-flow/db";
 import type {
   AiGatewayMediaResult,
   AiGatewayTextResult,
@@ -107,6 +107,7 @@ type RuntimeFlowRecord = {
 
 type NodeExecutionOutcome =
   | {
+      usageRecord?: UsageRecordInput;
       outputJson: Record<string, unknown>;
       type: "succeeded";
     }
@@ -115,6 +116,24 @@ type NodeExecutionOutcome =
       pollPayload: ProviderPollJobPayload;
       type: "waiting_provider";
     };
+
+type UsageRecordInput = {
+  billableCents: number;
+  eventType: string;
+  idempotencyKey: string;
+  inputTokens: number | null;
+  modality: "image" | "text" | "video";
+  modelId?: string | null;
+  nodeRunId: string;
+  outputTokens: number | null;
+  providerId?: string | null;
+  rawCost?: string | number | null;
+  routeId?: string | null;
+  totalTokens: number | null;
+  unitType?: string | null;
+  units?: number | null;
+  workflowRunId: string;
+};
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -308,6 +327,7 @@ function resolveOutputNodeOutput(upstreamOutputs: Array<Record<string, unknown> 
 
 export class WorkflowNodeExecutionService {
   readonly assetStore: MediaAssetStore;
+  readonly billingService: BillingService;
   readonly mediaGenerationRuntime: MediaGenerationRuntimeLike;
   readonly nodeExecuteQueue: NodeExecuteQueueLike;
   readonly pollDelayMs: number;
@@ -317,6 +337,7 @@ export class WorkflowNodeExecutionService {
 
   constructor(options: {
     assetBucket: string;
+    billingService?: BillingService;
     fetchFn?: FetchLike;
     mediaGenerationRuntime: MediaGenerationRuntimeLike;
     nodeExecuteQueue: NodeExecuteQueueLike;
@@ -330,6 +351,9 @@ export class WorkflowNodeExecutionService {
       assetBucket: options.assetBucket,
       fetchFn: options.fetchFn,
       storageProvider: options.storageProvider,
+    });
+    this.billingService = options.billingService ?? new BillingService({
+      pool: options.pool,
     });
     this.mediaGenerationRuntime = options.mediaGenerationRuntime;
     this.nodeExecuteQueue = options.nodeExecuteQueue;
@@ -522,6 +546,7 @@ export class WorkflowNodeExecutionService {
           currentNodeRun,
           context,
           outcome.outputJson,
+          outcome.type === "succeeded" ? outcome.usageRecord : undefined,
         );
 
         logger.info(
@@ -618,7 +643,9 @@ export class WorkflowNodeExecutionService {
 
         if (pollResult.status === "pending" || pollResult.status === "running") {
           const waitingJson = this.buildWaitingProviderOutput({
+            modelId: typeof providerState.modelId === "string" ? providerState.modelId : null,
             modelKey: typeof providerState.modelKey === "string" ? providerState.modelKey : null,
+            providerId: typeof providerState.providerId === "string" ? providerState.providerId : null,
             providerKey: typeof providerState.providerKey === "string" ? providerState.providerKey : null,
             providerTaskId: input.providerTaskId,
             routeId: typeof providerState.routeId === "string" ? providerState.routeId : null,
@@ -694,6 +721,28 @@ export class WorkflowNodeExecutionService {
           currentNodeRun,
           pollResult,
         );
+        const usageRecord = this.buildUsageRecord({
+          billableCents: 0,
+          eventType: currentNode.type === "video.generate" ? "ai.video.generate" : "ai.image.generate",
+          idempotencyKey: this.buildUsageIdempotencyKey(
+            context.tenantId,
+            workflowRun.id,
+            currentNodeRun.id,
+            currentNode.type === "video.generate" ? "video" : "image",
+          ),
+          inputTokens: pollResult.usage?.inputTokens ?? null,
+          modality: currentNode.type === "video.generate" ? "video" : "image",
+          modelId: pollResult.modelId ?? null,
+          nodeRunId: currentNodeRun.id,
+          outputTokens: pollResult.usage?.outputTokens ?? null,
+          providerId: pollResult.providerId ?? null,
+          rawCost: pollResult.usage?.rawCost ?? null,
+          routeId: pollResult.routeId ?? null,
+          totalTokens: pollResult.usage?.totalTokens ?? null,
+          unitType: "output_count",
+          units: outputJson.assets && Array.isArray(outputJson.assets) ? outputJson.assets.length : 0,
+          workflowRunId: workflowRun.id,
+        });
         const enqueuePayloads = await this.markNodeSucceededAndUnlockDependents(
           client,
           currentNode,
@@ -702,6 +751,7 @@ export class WorkflowNodeExecutionService {
           currentNodeRun,
           context,
           outputJson,
+          usageRecord,
         );
 
         logger.info(
@@ -848,6 +898,21 @@ export class WorkflowNodeExecutionService {
       );
 
       return {
+        usageRecord: this.buildUsageRecord({
+          billableCents: 0,
+          eventType: "ai.text.generate",
+          idempotencyKey: this.buildUsageIdempotencyKey(context.tenantId, workflowRun.id, nodeRun.id, "text"),
+          inputTokens: result.usage.inputTokens,
+          modality: "text",
+          modelId: result.modelId ?? null,
+          nodeRunId: nodeRun.id,
+          outputTokens: result.usage.outputTokens,
+          providerId: result.providerId ?? null,
+          rawCost: result.usage.rawCost ?? null,
+          routeId: result.routeId ?? null,
+          totalTokens: result.usage.totalTokens,
+          workflowRunId: workflowRun.id,
+        }),
         outputJson: this.mapTextGenerationOutput(result),
         type: "succeeded",
       };
@@ -914,10 +979,12 @@ export class WorkflowNodeExecutionService {
 
       return {
         outputJson: this.buildWaitingProviderOutput({
+          modelId: result.modelId ?? null,
           modelKey: result.modelKey,
+          providerId: result.providerId ?? null,
           providerKey: result.providerKey,
           providerTaskId: result.providerTaskId,
-          routeId: null,
+          routeId: result.routeId ?? null,
           routeKey: typeof node.config.routeKey === "string" ? node.config.routeKey : null,
           status: "waiting_provider",
         }),
@@ -942,13 +1009,37 @@ export class WorkflowNodeExecutionService {
     );
 
     return {
+      usageRecord: this.buildUsageRecord({
+        billableCents: 0,
+        eventType: kind === "image" ? "ai.image.generate" : "ai.video.generate",
+        idempotencyKey: this.buildUsageIdempotencyKey(
+          context.tenantId,
+          workflowRun.id,
+          nodeRun.id,
+          kind,
+        ),
+        inputTokens: result.usage?.inputTokens ?? null,
+        modality: kind,
+        modelId: result.modelId ?? null,
+        nodeRunId: nodeRun.id,
+        outputTokens: result.usage?.outputTokens ?? null,
+        providerId: result.providerId ?? null,
+        rawCost: result.usage?.rawCost ?? null,
+        routeId: result.routeId ?? null,
+        totalTokens: result.usage?.totalTokens ?? null,
+        unitType: "output_count",
+        units: outputJson.assets && Array.isArray(outputJson.assets) ? outputJson.assets.length : 0,
+        workflowRunId: workflowRun.id,
+      }),
       outputJson,
       type: "succeeded",
     };
   }
 
   private buildWaitingProviderOutput(input: {
+    modelId: string | null;
     modelKey: string | null;
+    providerId: string | null;
     providerKey: string | null;
     providerTaskId: string;
     routeId: string | null;
@@ -957,7 +1048,9 @@ export class WorkflowNodeExecutionService {
   }): Record<string, unknown> {
     return {
       providerTask: {
+        modelId: input.modelId,
         modelKey: input.modelKey,
+        providerId: input.providerId,
         providerKey: input.providerKey,
         providerTaskId: input.providerTaskId,
         routeId: input.routeId,
@@ -1163,6 +1256,59 @@ export class WorkflowNodeExecutionService {
     };
   }
 
+  private buildUsageIdempotencyKey(
+    tenantId: string,
+    workflowRunId: string,
+    nodeRunId: string,
+    modality: "image" | "text" | "video",
+  ): string {
+    return `usage:${tenantId}:${workflowRunId}:${nodeRunId}:${modality}`;
+  }
+
+  private buildUsageRecord(input: UsageRecordInput): UsageRecordInput {
+    return input;
+  }
+
+  private async recordUsageForNode(
+    client: PoolClient,
+    tenantId: string,
+    input: UsageRecordInput,
+  ): Promise<void> {
+    const usageEvent = await this.billingService.recordUsageEventWithClient(client, tenantId, {
+      billableCents: input.billableCents,
+      eventType: input.eventType,
+      idempotencyKey: input.idempotencyKey,
+      inputTokens: input.inputTokens,
+      metadata: {
+        nodeRunId: input.nodeRunId,
+        workflowRunId: input.workflowRunId,
+      },
+      modality: input.modality,
+      modelId: input.modelId ?? null,
+      nodeRunId: input.nodeRunId,
+      outputTokens: input.outputTokens,
+      providerId: input.providerId ?? null,
+      rawCost: input.rawCost ?? null,
+      routeId: input.routeId ?? null,
+      totalTokens: input.totalTokens,
+      unitType: input.unitType ?? null,
+      units: input.units ?? null,
+      workflowRunId: input.workflowRunId,
+    });
+
+    await this.billingService.settleUsageWithClient(client, tenantId, {
+      amountCents: input.billableCents,
+      description: `${input.eventType} settled`,
+      idempotencyKey: `settle:${usageEvent.id}`,
+      metadata: {
+        modality: input.modality,
+        nodeRunId: input.nodeRunId,
+        workflowRunId: input.workflowRunId,
+      },
+      usageEventId: usageEvent.id,
+    });
+  }
+
   private async markNodeSucceededAndUnlockDependents(
     client: PoolClient,
     currentNode: CompiledWorkflowNode,
@@ -1171,7 +1317,12 @@ export class WorkflowNodeExecutionService {
     currentNodeRun: NodeRunRecord,
     context: WorkflowExecutionContext,
     outputJson: Record<string, unknown>,
+    usageRecord?: UsageRecordInput,
   ): Promise<NodeExecuteJobPayload[]> {
+    if (usageRecord) {
+      await this.recordUsageForNode(client, context.tenantId, usageRecord);
+    }
+
     await client.query(
       `
         UPDATE node_runs

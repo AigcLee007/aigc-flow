@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, describe, expect, test, vi } from "vitest";
 
-import { createPgPool, withTenantTransaction } from "@aigc-flow/db";
+import { BillingService, createPgPool, withTenantTransaction } from "@aigc-flow/db";
 import type {
   AiGatewayMediaResult,
   ProviderTaskResult,
@@ -133,6 +133,29 @@ function createTestLogger(): WorkerLogger {
       return;
     },
   };
+}
+
+async function countBillingState(
+  pool: ReturnType<typeof createPgPool>,
+  tenantId: string,
+  userId: string,
+) {
+  return withTenantTransaction(
+    { tenantId, userId },
+    async (client) => {
+      const usageEvents = await client.query<{ count: number }>(
+        "SELECT COUNT(*)::int AS count FROM usage_events",
+      );
+      const ledgerEntries = await client.query<{ count: number }>(
+        "SELECT COUNT(*)::int AS count FROM billing_ledger",
+      );
+      return {
+        ledgerEntries: ledgerEntries.rows[0]?.count ?? 0,
+        usageEvents: usageEvents.rows[0]?.count ?? 0,
+      };
+    },
+    pool,
+  );
 }
 
 async function seedWorkflowRuntime(
@@ -705,6 +728,21 @@ describeWithDatabase("workflow node execution", () => {
           { executionService: service },
         );
 
+        await processNodeExecuteJob(
+          {
+            data: {
+              nodeRunId: seeded.middleNodeRunId,
+              tenantId: seeded.tenantId,
+              traceId: "trace-text-retry",
+              workflowRunId: seeded.workflowRunId,
+            },
+            id: "job-text-retry",
+            queueName: QUEUE_NAMES.nodeExecute,
+          } as never,
+          createTestLogger(),
+          { executionService: service },
+        );
+
         expect(generateText).toHaveBeenCalledTimes(1);
         const nodeRun = await withTenantTransaction(
           { tenantId: seeded.tenantId, userId: seeded.userId },
@@ -717,9 +755,39 @@ describeWithDatabase("workflow node execution", () => {
           },
           appPool,
         );
+        const billing = await countBillingState(appPool, seeded.tenantId, seeded.userId);
+        const billingService = new BillingService({ pool: appPool });
+
+        const usageEventId = await withTenantTransaction(
+          { tenantId: seeded.tenantId, userId: seeded.userId },
+          async (client) => {
+            const result = await client.query<{ id: string }>(
+              "SELECT id::text AS id FROM usage_events LIMIT 1",
+            );
+            return result.rows[0]?.id ?? "";
+          },
+          appPool,
+        );
+        await billingService.settleUsage(
+          { tenantId: seeded.tenantId, userId: seeded.userId },
+          {
+            amountCents: 0,
+            idempotencyKey: `settle:${usageEventId}`,
+            usageEventId,
+          },
+        );
+        const billingAfterDuplicateSettle = await countBillingState(appPool, seeded.tenantId, seeded.userId);
 
         expect(nodeRun.status).toBe("succeeded");
         expect(nodeRun.output_json.text).toBe("generated text");
+        expect(billing).toEqual({
+          ledgerEntries: 1,
+          usageEvents: 1,
+        });
+        expect(billingAfterDuplicateSettle).toEqual({
+          ledgerEntries: 1,
+          usageEvents: 1,
+        });
       } finally {
         await appPool.end();
         await adminPool.end();
@@ -826,6 +894,7 @@ describeWithDatabase("workflow node execution", () => {
           },
           appPool,
         );
+        const billing = await countBillingState(appPool, seeded.tenantId, seeded.userId);
 
         expect(state.nodeRun.status).toBe("succeeded");
         expect(state.nodeRun.output_json).toEqual({
@@ -848,6 +917,10 @@ describeWithDatabase("workflow node execution", () => {
         expect(storageProvider.objects.size).toBe(1);
         expect(state.outputNode.status).toBe("runnable");
         expect(pollQueue.jobs).toHaveLength(0);
+        expect(billing).toEqual({
+          ledgerEntries: 1,
+          usageEvents: 1,
+        });
       } finally {
         await appPool.end();
         await adminPool.end();
@@ -937,7 +1010,9 @@ describeWithDatabase("workflow node execution", () => {
         expect(nodeRun.provider_task_id).toBe("task-video-1");
         expect(nodeRun.output_json).toEqual({
           providerTask: {
+            modelId: null,
             modelKey: "video-model",
+            providerId: null,
             providerKey: "mock-provider",
             providerTaskId: "task-video-1",
             routeId: null,
@@ -1048,6 +1123,7 @@ describeWithDatabase("workflow node execution", () => {
           },
           appPool,
         );
+        const billing = await countBillingState(appPool, seeded.tenantId, seeded.userId);
 
         expect(nodeRun.status).toBe("waiting_provider");
         expect(nodeRun.output_json.providerTask).toMatchObject({
@@ -1057,6 +1133,10 @@ describeWithDatabase("workflow node execution", () => {
         expect(JSON.stringify(nodeRun.output_json)).not.toContain("base64");
         expect(pollQueue.jobs).toHaveLength(1);
         expect(pollQueue.jobs[0].delay).toBeGreaterThan(0);
+        expect(billing).toEqual({
+          ledgerEntries: 0,
+          usageEvents: 0,
+        });
       } finally {
         await appPool.end();
         await adminPool.end();
@@ -1134,6 +1214,22 @@ describeWithDatabase("workflow node execution", () => {
           { executionService: service },
         );
 
+        await processProviderPollJob(
+          {
+            data: {
+              nodeRunId: seeded.middleNodeRunId,
+              providerTaskId: "task-success",
+              tenantId: seeded.tenantId,
+              traceId: "trace-success-retry",
+              workflowRunId: seeded.workflowRunId,
+            },
+            id: "job-success-retry",
+            queueName: QUEUE_NAMES.providerPoll,
+          } as never,
+          createTestLogger(),
+          { executionService: service },
+        );
+
         const state = await withTenantTransaction(
           { tenantId: seeded.tenantId, userId: seeded.userId },
           async (client) => {
@@ -1157,6 +1253,7 @@ describeWithDatabase("workflow node execution", () => {
           },
           appPool,
         );
+        const billing = await countBillingState(appPool, seeded.tenantId, seeded.userId);
 
         expect(state.nodeRun.status).toBe("succeeded");
         expect(state.nodeRun.output_json.assets).toHaveLength(1);
@@ -1164,6 +1261,10 @@ describeWithDatabase("workflow node execution", () => {
         expect(state.outputNode.status).toBe("runnable");
         expect(state.assets).toBe(1);
         expect(nodeQueue.jobs).toHaveLength(1);
+        expect(billing).toEqual({
+          ledgerEntries: 1,
+          usageEvents: 1,
+        });
       } finally {
         await appPool.end();
         await adminPool.end();

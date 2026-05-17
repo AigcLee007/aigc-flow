@@ -66,6 +66,9 @@ The current Fastify v2 service exposes:
 - `GET /api/v2/workflow-runs/:runId/events`
 - `GET /api/v2/workflow-runs/:runId/stream`
 - `POST /api/v2/workflow-runs/:runId/cancel`
+- `GET /api/v2/billing/summary`
+- `GET /api/v2/billing/usage-events`
+- `GET /api/v2/billing/ledger`
 
 By default it listens on `http://localhost:3366`.
 
@@ -185,6 +188,48 @@ Current PR-12 limits:
 - provider polling uses a minimal fixed delay rather than complex retry/backoff
 - no real OpenAI, Gemini, or third-party provider calls are used in normal
   tests
+
+## PR-13 billing v2 foundation
+
+PR-13 adds the first v2 billing state and retry-safe usage recording:
+
+- `000008_billing.sql`
+- `billing_accounts`
+- `usage_events`
+- `billing_ledger`
+- idempotent `tenant_id + idempotency_key` handling for usage events and ledger
+  entries
+- backend worker usage recording for:
+  - `text.generate`
+  - `image.generate`
+  - `video.generate`
+- billing API read endpoints:
+  - `GET /api/v2/billing/summary`
+  - `GET /api/v2/billing/usage-events`
+  - `GET /api/v2/billing/ledger`
+
+Current PR-13 behavior:
+
+- the worker records one `usage_events` row per successful node execution using:
+  - `usage:{tenantId}:{workflowRunId}:{nodeRunId}:text`
+  - `usage:{tenantId}:{workflowRunId}:{nodeRunId}:image`
+  - `usage:{tenantId}:{workflowRunId}:{nodeRunId}:video`
+- async media tasks only record usage when `provider.poll` reaches the final
+  `succeeded` state
+- worker retries and repeated provider polling do not duplicate `usage_events`
+  or `billing_ledger` rows because both use tenant-scoped idempotency keys
+- this phase writes a zero-amount `settle` ledger entry for each recorded usage
+  event so the ledger path is exercised without introducing a real pricing
+  engine yet
+- PostgreSQL remains the only source of truth for account, usage, and ledger
+  state
+
+Current PR-13 limits:
+
+- no real payment provider is connected yet
+- no Stripe, Paddle, PayPal, or invoice flow exists yet
+- no frontend billing cutover exists yet
+- no pricing admin backend or quota engine exists yet
 
 ## Configure `DATABASE_URL`
 
@@ -378,6 +423,7 @@ Current migrations:
 - `000005_assets.sql`
 - `000006_ai_gateway.sql`
 - `000007_workflow_runs.sql`
+- `000008_billing.sql`
 
 `000001_extensions.sql` installs:
 
@@ -423,6 +469,12 @@ schema:
 - `workflow_runs`
 - `node_runs`
 - `workflow_run_events`
+
+`000008_billing.sql` adds the first billing v2 tables:
+
+- `billing_accounts`
+- `usage_events`
+- `billing_ledger`
 
 PR-03 and PR-04 also introduce PostgreSQL helper functions for request context
 and the current base RLS policies for tenant-scoped tables.
@@ -501,6 +553,9 @@ These cover:
 - workflow run reads with `node_runs`
 - workflow run event listing with `afterSequence`
 - workflow run SSE replay and resume behavior
+- billing summary auth and tenant isolation
+- billing usage-event list auth and tenant isolation
+- billing ledger list auth and tenant isolation
 - workflow run cancel behavior
 
 You can also run the standalone workflow compiler tests:

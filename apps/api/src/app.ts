@@ -18,6 +18,8 @@ import { registerAuthRoutes } from "./modules/auth/auth.routes.js";
 import { AuthService } from "./modules/auth/auth.service.js";
 import { registerAssetRoutes } from "./modules/assets/assets.routes.js";
 import { AssetsService } from "./modules/assets/assets.service.js";
+import { registerBillingRoutes } from "./modules/billing/billing.routes.js";
+import { BillingApiService } from "./modules/billing/billing.service.js";
 import { registerFlowRoutes } from "./modules/flows/flows.routes.js";
 import { FlowsService } from "./modules/flows/flows.service.js";
 import { registerProjectRoutes } from "./modules/projects/projects.routes.js";
@@ -79,6 +81,7 @@ export function buildApp(options?: {
     pool,
     storageProvider,
   });
+  const billingService = new BillingApiService({ pool });
   const queueHealthService =
     options?.queueHealthService ??
     new QueueHealthService(
@@ -104,6 +107,7 @@ export function buildApp(options?: {
   app.decorate("aiGatewayService", aiGatewayService);
   app.decorate("authService", authService);
   app.decorate("assetsService", assetsService);
+  app.decorate("billingService", billingService);
   app.decorate("credentialVault", credentialVault);
   app.decorate("projectsService", projectsService);
   app.decorate("flowsService", flowsService);
@@ -137,6 +141,7 @@ export function buildApp(options?: {
   registerAiGatewayAdminRoutes(app);
   registerAuthRoutes(app);
   registerAssetRoutes(app);
+  registerBillingRoutes(app);
   registerProjectRoutes(app);
   registerFlowRoutes(app);
   registerQueueRoutes(app);

@@ -42,6 +42,11 @@ The current Fastify v2 service exposes:
 - `PATCH /api/v2/flows/:flowId`
 - `POST /api/v2/flows/:flowId/publish`
 - `GET /api/v2/flows/:flowId/versions`
+- `POST /api/v2/assets/presigned-upload`
+- `POST /api/v2/assets/:assetId/complete-upload`
+- `GET /api/v2/assets/:assetId`
+- `GET /api/v2/assets/:assetId/download-url`
+- `DELETE /api/v2/assets/:assetId`
 
 By default it listens on `http://localhost:3366`.
 
@@ -84,6 +89,54 @@ In production, `JWT_ACCESS_SECRET` must be present or the v2 API will fail to
 start. `JWT_REFRESH_SECRET` remains in the environment contract even though
 refresh tokens are currently random database-backed tokens rather than JWTs.
 
+## Configure S3 / MinIO asset storage
+
+PR-06 adds the first v2 asset storage foundation:
+
+- PostgreSQL `assets` and `asset_variants` metadata tables
+- tenant-scoped RLS on both asset tables
+- S3-compatible storage provider in `packages/storage`
+- presigned upload and download APIs in `apps/api`
+
+The current PR-06 scope is limited to uploaded assets. It does not yet connect
+AI-generated outputs, workflow runs, or worker asset ingestion.
+
+PowerShell:
+
+```powershell
+$env:S3_ENDPOINT="http://localhost:9000"
+$env:S3_REGION="us-east-1"
+$env:S3_BUCKET="aigc-flow-dev"
+$env:S3_ACCESS_KEY_ID="minio"
+$env:S3_SECRET_ACCESS_KEY="minio123456"
+$env:S3_FORCE_PATH_STYLE="true"
+```
+
+Development defaults:
+
+- `S3_ENDPOINT=http://localhost:9000`
+- `S3_REGION=us-east-1`
+- `S3_BUCKET=aigc-flow-dev`
+- `S3_ACCESS_KEY_ID=minio`
+- `S3_SECRET_ACCESS_KEY=minio123456`
+- `S3_FORCE_PATH_STYLE=true`
+
+Production startup now requires all of the S3 variables above. The v2 API will
+fail fast if any required S3 configuration is missing.
+
+## MinIO startup notes
+
+`npm run dev:infra` starts MinIO with:
+
+- API endpoint: `http://localhost:9000`
+- Console: `http://localhost:9001`
+- Access key: `minio`
+- Secret key: `minio123456`
+
+Before using the PR-06 asset APIs, create the configured bucket if it does not
+already exist. With the MinIO UI, sign in at `http://localhost:9001` and create
+the `aigc-flow-dev` bucket. Keep the bucket private.
+
 ## Run the PostgreSQL migrations
 
 ```bash
@@ -106,6 +159,7 @@ Current migrations:
 - `000002_iam.sql`
 - `000003_auth.sql`
 - `000004_projects_flows.sql`
+- `000005_assets.sql`
 
 `000001_extensions.sql` installs:
 
@@ -132,12 +186,20 @@ Current migrations:
 - `flows`
 - `flow_versions`
 
+`000005_assets.sql` adds the current uploaded asset model:
+
+- `assets`
+- `asset_variants`
+
 PR-03 and PR-04 also introduce PostgreSQL helper functions for request context
 and the current base RLS policies for tenant-scoped tables.
 
 PR-05 keeps runtime execution tables such as `workflow_runs` and `node_runs`
 deferred. This phase only introduces authoring-time flow metadata, versioning,
 and compiled graph persistence.
+
+PR-06 also keeps `workflow_run_id` and `node_run_id` as nullable placeholder
+columns on `assets` without introducing workflow runtime tables yet.
 
 ## Run the `packages/db` tests
 
@@ -157,6 +219,8 @@ verify:
 - auth-related RLS visibility for tenant lists
 - projects / flows / flow_versions migrations
 - tenant RLS isolation for projects / flows / flow_versions
+- assets / asset_variants migrations
+- tenant RLS isolation for assets / asset_variants
 
 ## Run the `apps/api` auth tests
 
@@ -189,11 +253,23 @@ These cover:
 - flow publish and version history
 - cyclic graph rejection
 - tenant isolation for projects / flows / versions
+- asset presigned upload permissions
+- complete-upload object HEAD verification
+- asset metadata reads without permanent public URLs
+- tenant isolation for asset metadata and download URLs
+- soft-deleted assets refusing download URLs
 
 You can also run the standalone workflow compiler tests:
 
 ```bash
 npm run test --workspace @aigc-flow/workflow-core
+```
+
+For the storage package itself:
+
+```bash
+npm run build --workspace @aigc-flow/storage
+npm run test --workspace @aigc-flow/storage
 ```
 
 ## Tenant-scoped database access
@@ -222,6 +298,11 @@ PR-05 extends that same RLS pattern to:
 - `projects`
 - `flows`
 - `flow_versions`
+
+PR-06 extends the same RLS pattern to:
+
+- `assets`
+- `asset_variants`
 
 ## Try the Auth v2 API
 
@@ -290,3 +371,46 @@ Current auth storage note:
 - PR-04 keeps refresh tokens in PostgreSQL.
 - The database stores only `token_hash`, never the refresh token plaintext.
 - Redis session/cache integration is intentionally deferred to a later PR.
+
+## Try the PR-06 asset API
+
+Create a presigned upload:
+
+```bash
+curl -X POST http://localhost:3366/api/v2/assets/presigned-upload ^
+  -H "authorization: Bearer <access-token>" ^
+  -H "content-type: application/json" ^
+  -d "{\"kind\":\"image\",\"mimeType\":\"image/png\",\"originalFilename\":\"demo.png\",\"sizeBytes\":12345}"
+```
+
+The API returns:
+
+- an `asset` metadata row with `status=uploading`
+- a short-lived presigned `PUT` upload URL
+- required request headers such as `content-type` when applicable
+
+After the client uploads to MinIO/S3, mark the asset as available:
+
+```bash
+curl -X POST http://localhost:3366/api/v2/assets/<asset-id>/complete-upload ^
+  -H "authorization: Bearer <access-token>" ^
+  -H "content-type: application/json" ^
+  -d "{}"
+```
+
+Fetch metadata:
+
+```bash
+curl http://localhost:3366/api/v2/assets/<asset-id> ^
+  -H "authorization: Bearer <access-token>"
+```
+
+Request a short-lived download URL:
+
+```bash
+curl http://localhost:3366/api/v2/assets/<asset-id>/download-url ^
+  -H "authorization: Bearer <access-token>"
+```
+
+PR-06 does not expose permanent public URLs and does not route through the
+legacy generated asset service.

@@ -1,11 +1,14 @@
 import Fastify from "fastify";
 
 import { createPgPool } from "@aigc-flow/db";
+import { S3StorageProvider, type StorageProvider } from "@aigc-flow/storage";
 
 import { getApiEnv, type ApiEnv } from "./config/env.js";
 import { registerRequestContext } from "./http/request-context.js";
 import { registerAuthRoutes } from "./modules/auth/auth.routes.js";
 import { AuthService } from "./modules/auth/auth.service.js";
+import { registerAssetRoutes } from "./modules/assets/assets.routes.js";
+import { AssetsService } from "./modules/assets/assets.service.js";
 import { registerFlowRoutes } from "./modules/flows/flows.routes.js";
 import { FlowsService } from "./modules/flows/flows.service.js";
 import { registerProjectRoutes } from "./modules/projects/projects.routes.js";
@@ -17,13 +20,28 @@ export function buildApp(options?: {
   env?: ApiEnv;
   logger?: boolean;
   pool?: PgPool;
+  storageProvider?: StorageProvider;
 }) {
   const env = options?.env ?? getApiEnv();
   const ownedPool = !options?.pool;
   const pool = options?.pool ?? createPgPool();
+  const storageProvider =
+    options?.storageProvider ??
+    new S3StorageProvider({
+      accessKeyId: env.s3AccessKeyId,
+      endpoint: env.s3Endpoint,
+      forcePathStyle: env.s3ForcePathStyle,
+      region: env.s3Region,
+      secretAccessKey: env.s3SecretAccessKey,
+    });
   const authService = new AuthService({
     env,
     pool,
+  });
+  const assetsService = new AssetsService({
+    bucket: env.s3Bucket,
+    pool,
+    storageProvider,
   });
   const projectsService = new ProjectsService({ pool });
   const flowsService = new FlowsService({ pool });
@@ -33,8 +51,10 @@ export function buildApp(options?: {
   });
 
   app.decorate("authService", authService);
+  app.decorate("assetsService", assetsService);
   app.decorate("projectsService", projectsService);
   app.decorate("flowsService", flowsService);
+  app.decorate("storageProvider", storageProvider);
   registerRequestContext(app, authService);
 
   app.addHook("onClose", async () => {
@@ -48,6 +68,7 @@ export function buildApp(options?: {
   });
 
   registerAuthRoutes(app);
+  registerAssetRoutes(app);
   registerProjectRoutes(app);
   registerFlowRoutes(app);
 

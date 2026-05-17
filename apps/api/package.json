@@ -11,6 +11,7 @@
   },
   "dependencies": {
     "@aigc-flow/db": "0.0.0",
+    "@aigc-flow/storage": "0.0.0",
     "@aigc-flow/workflow-core": "0.0.0",
     "argon2": "^0.44.0",
     "fastify": "^5.6.1",

@@ -25,6 +25,8 @@ uploads/
 storage/
 !packages/storage/
 !packages/storage/**
+packages/storage/dist/
+packages/storage/node_modules/
 scratch/
 runtime-logs/
 .tmp-*

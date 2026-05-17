@@ -1,6 +1,8 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { ZodError } from "zod";
 
+import { AiGatewayError } from "@aigc-flow/ai-gateway-core";
+
 import {
   requireAuth,
   requirePermission,
@@ -12,11 +14,13 @@ import {
   type CreateProviderInput,
   type CreateRouteInput,
   type CredentialIdParams,
+  type GenerateTextInput,
   type RotateCredentialInput,
   type RouteIdParams,
   type UpdateCredentialInput,
   type UpdateRouteInput,
   createCredentialSchema,
+  generateTextSchema,
   createModelSchema,
   createProviderSchema,
   createRouteSchema,
@@ -85,12 +89,31 @@ function handleRouteError(
     return sendError(request, reply, error.statusCode, error.code, error.message);
   }
 
+  if (error instanceof AiGatewayError) {
+    return sendError(request, reply, error.statusCode, error.code, error.message);
+  }
+
   request.log.error({ err: error }, "ai gateway admin route failed");
   return sendError(request, reply, 500, "INTERNAL_ERROR", "Internal server error");
 }
 
 export function registerAiGatewayAdminRoutes(app: FastifyInstance): void {
   const authHandlers = [requireAuth, requireTenant];
+
+  app.post(
+    "/api/v2/ai/text/generate",
+    {
+      preHandler: [...authHandlers, requirePermission("provider:read")],
+    },
+    async (request, reply) => {
+      try {
+        const body = parseBody<GenerateTextInput>(request, generateTextSchema);
+        return reply.send(await app.aiGatewayService.generateText(getTenantContext(request), body));
+      } catch (error) {
+        return handleRouteError(error, request, reply);
+      }
+    },
+  );
 
   app.get(
     "/api/v2/admin/ai/providers",

@@ -82,11 +82,25 @@ export const rotateCredentialSchema = z.object({
   secret: z.string().trim().min(1).max(4000),
 });
 
+export const textMessageSchema = z.object({
+  content: z.string().min(1).max(20000),
+  role: z.enum(["assistant", "system", "user"]),
+});
+
+export const generateTextSchema = z.object({
+  maxTokens: z.number().int().positive().nullable().optional(),
+  messages: z.array(textMessageSchema).min(1),
+  model: z.string().trim().min(1).max(255).nullable().optional(),
+  routeKey: z.string().trim().min(1).max(255).nullable().optional(),
+  temperature: z.number().min(0).max(2).nullable().optional(),
+});
+
 export type CreateCredentialInput = z.infer<typeof createCredentialSchema>;
 export type CreateModelInput = z.infer<typeof createModelSchema>;
 export type CreateProviderInput = z.infer<typeof createProviderSchema>;
 export type CreateRouteInput = z.infer<typeof createRouteSchema>;
 export type CredentialIdParams = z.infer<typeof credentialIdParamsSchema>;
+export type GenerateTextInput = z.infer<typeof generateTextSchema>;
 export type RotateCredentialInput = z.infer<typeof rotateCredentialSchema>;
 export type RouteIdParams = z.infer<typeof routeIdParamsSchema>;
 export type UpdateCredentialInput = z.infer<typeof updateCredentialSchema>;

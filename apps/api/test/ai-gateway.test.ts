@@ -1,4 +1,6 @@
 import { randomUUID } from "node:crypto";
+import { once } from "node:events";
+import { createServer } from "node:http";
 import { afterAll, describe, expect, test } from "vitest";
 
 import { createPgPool, withTenantTransaction } from "@aigc-flow/db";
@@ -12,6 +14,7 @@ import { hasDatabaseEnv, withDatabase } from "../../../packages/db/test/helpers.
 
 const originalDatabaseUrl = process.env.DATABASE_URL;
 const describeWithDatabase = hasDatabaseEnv() ? describe : describe.skip;
+const openServers = new Set<ReturnType<typeof createServer>>();
 
 const testEnv: ApiEnv = {
   accessTokenTtlSeconds: 60 * 15,
@@ -59,11 +62,55 @@ class MemoryStorageProvider implements StorageProvider {
   }
 }
 
+async function withMockProvider(
+  handler: Parameters<typeof createServer>[0],
+): Promise<{ close: () => Promise<void>; url: string }> {
+  const server = createServer(handler);
+  openServers.add(server);
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  const address = server.address();
+  if (!address || typeof address === "string") {
+    throw new Error("Expected a TCP server address");
+  }
+
+  return {
+    close: async () => {
+      await new Promise<void>((resolve, reject) => {
+        server.close((error) => {
+          if (error) {
+            reject(error);
+            return;
+          }
+          resolve();
+        });
+      });
+      openServers.delete(server);
+    },
+    url: `http://127.0.0.1:${address.port}`,
+  };
+}
+
 afterAll(() => {
   if (originalDatabaseUrl === undefined) {
     delete process.env.DATABASE_URL;
   } else {
     process.env.DATABASE_URL = originalDatabaseUrl;
+  }
+});
+
+afterAll(async () => {
+  for (const server of openServers) {
+    await new Promise<void>((resolve, reject) => {
+      server.close((error) => {
+        if (error) {
+          reject(error);
+          return;
+        }
+        resolve();
+      });
+    });
+    openServers.delete(server);
   }
 });
 
@@ -93,6 +140,84 @@ async function registerOwner(
 
   expect(response.statusCode).toBe(201);
   return response.json();
+}
+
+async function createTextRuntimeFixture(options: {
+  accessToken: string;
+  api: ReturnType<typeof buildTestApp>;
+  baseUrl: string;
+  modelKey?: string;
+  routeKey: string;
+}) {
+  const provider = await options.api.inject({
+    headers: {
+      authorization: `Bearer ${options.accessToken}`,
+    },
+    method: "POST",
+    payload: {
+      defaultBaseUrl: options.baseUrl,
+      key: `${options.routeKey}-provider`,
+      kind: "openai-compatible",
+      name: `${options.routeKey} Provider`,
+    },
+    url: "/api/v2/admin/ai/providers",
+  });
+  expect(provider.statusCode).toBe(201);
+
+  const providerBody = provider.json();
+  const model = await options.api.inject({
+    headers: {
+      authorization: `Bearer ${options.accessToken}`,
+    },
+    method: "POST",
+    payload: {
+      displayName: `${options.routeKey} Model`,
+      modality: "text",
+      modelKey: options.modelKey ?? `${options.routeKey}-model`,
+      providerId: providerBody.id,
+    },
+    url: "/api/v2/admin/ai/models",
+  });
+  expect(model.statusCode).toBe(201);
+
+  const modelBody = model.json();
+  const credential = await options.api.inject({
+    headers: {
+      authorization: `Bearer ${options.accessToken}`,
+    },
+    method: "POST",
+    payload: {
+      name: `${options.routeKey} Credential`,
+      providerId: providerBody.id,
+      secret: `sk-${options.routeKey}-secret`,
+    },
+    url: "/api/v2/admin/credentials",
+  });
+  expect(credential.statusCode).toBe(201);
+
+  const credentialBody = credential.json();
+  const route = await options.api.inject({
+    headers: {
+      authorization: `Bearer ${options.accessToken}`,
+    },
+    method: "POST",
+    payload: {
+      credentialId: credentialBody.id,
+      modality: "text",
+      modelId: modelBody.id,
+      providerId: providerBody.id,
+      routeKey: options.routeKey,
+    },
+    url: "/api/v2/admin/ai/routes",
+  });
+  expect(route.statusCode).toBe(201);
+
+  return {
+    credential: credentialBody,
+    model: modelBody,
+    provider: providerBody,
+    route: route.json(),
+  };
 }
 
 describeWithDatabase("ai gateway admin API", () => {
@@ -486,6 +611,229 @@ describeWithDatabase("ai gateway admin API", () => {
       } finally {
         await appPool.end();
         await adminPool.end();
+      }
+    });
+  });
+
+  test("text runtime uses a mock provider, writes ai_call_logs, normalizes 429, and enforces tenant access", async () => {
+    const mockProvider = await withMockProvider(async (request, response) => {
+      const chunks: Buffer[] = [];
+      for await (const chunk of request) {
+        chunks.push(Buffer.from(chunk));
+      }
+
+      const body = JSON.parse(Buffer.concat(chunks).toString("utf8")) as {
+        model: string;
+      };
+
+      if (body.model === "rate-limit-model") {
+        response.statusCode = 429;
+        response.setHeader("content-type", "application/json");
+        response.end(JSON.stringify({ error: { message: "too many requests" } }));
+        return;
+      }
+
+      response.setHeader("content-type", "application/json");
+      response.end(
+        JSON.stringify({
+          choices: [
+            {
+              message: {
+                content: "mock runtime output",
+              },
+            },
+          ],
+          usage: {
+            completion_tokens: 2,
+            prompt_tokens: 1,
+            total_tokens: 3,
+          },
+        }),
+      );
+    });
+
+    await withDatabase(async ({ createAppDatabaseUrl, databaseUrl }) => {
+      process.env.DATABASE_URL = databaseUrl;
+      const adminPool = createPgPool();
+      let appPool = createPgPool();
+
+      try {
+        await runMigrations(adminPool);
+        appPool = createPgPool({
+          connectionString: await createAppDatabaseUrl(),
+        });
+        const api = buildTestApp(appPool);
+        const tenantAOwner = await registerOwner(api, "runtime-a@example.com", "Runtime A");
+        const tenantBOwner = await registerOwner(api, "runtime-b@example.com", "Runtime B");
+
+        const tenantARuntime = await createTextRuntimeFixture({
+          accessToken: tenantAOwner.accessToken,
+          api,
+          baseUrl: mockProvider.url,
+          routeKey: "tenant-a-text",
+        });
+        const tenantBRuntime = await createTextRuntimeFixture({
+          accessToken: tenantBOwner.accessToken,
+          api,
+          baseUrl: mockProvider.url,
+          routeKey: "tenant-b-text",
+        });
+        const rateLimitedRuntime = await createTextRuntimeFixture({
+          accessToken: tenantAOwner.accessToken,
+          api,
+          baseUrl: mockProvider.url,
+          modelKey: "rate-limit-model",
+          routeKey: "tenant-a-rate-limit",
+        });
+
+        const successResponse = await api.inject({
+          headers: {
+            authorization: `Bearer ${tenantAOwner.accessToken}`,
+          },
+          method: "POST",
+          payload: {
+            messages: [{ content: "hello runtime", role: "user" }],
+            routeKey: "tenant-a-text",
+            temperature: 0.7,
+          },
+          url: "/api/v2/ai/text/generate",
+        });
+        expect(successResponse.statusCode).toBe(200);
+        expect(successResponse.json()).toEqual({
+          modelKey: tenantARuntime.model.modelKey,
+          outputText: "mock runtime output",
+          providerKey: tenantARuntime.provider.key,
+          status: "succeeded",
+          usage: {
+            inputTokens: 1,
+            outputTokens: 2,
+            totalTokens: 3,
+          },
+        });
+        expect(JSON.stringify(successResponse.json())).not.toContain("sk-");
+
+        const successLog = await adminPool.query<{
+          error: Record<string, unknown> | null;
+          status: string;
+        }>(
+          `
+            SELECT status, error
+            FROM ai_call_logs
+            WHERE tenant_id = $1::uuid
+              AND route_id = $2::uuid
+            ORDER BY created_at DESC
+            LIMIT 1
+          `,
+          [tenantAOwner.currentTenant.id, tenantARuntime.route.id],
+        );
+        expect(successLog.rows[0]).toEqual({
+          error: null,
+          status: "succeeded",
+        });
+
+        const rateLimitResponse = await api.inject({
+          headers: {
+            authorization: `Bearer ${tenantAOwner.accessToken}`,
+          },
+          method: "POST",
+          payload: {
+            messages: [{ content: "please rate limit", role: "user" }],
+            routeKey: "tenant-a-rate-limit",
+          },
+          url: "/api/v2/ai/text/generate",
+        });
+        expect(rateLimitResponse.statusCode).toBe(429);
+        expect(rateLimitResponse.json()).toMatchObject({
+          error: {
+            code: "PROVIDER_RATE_LIMIT",
+          },
+        });
+
+        const failedLog = await adminPool.query<{
+          error: Record<string, unknown> | null;
+          status: string;
+        }>(
+          `
+            SELECT status, error
+            FROM ai_call_logs
+            WHERE tenant_id = $1::uuid
+              AND route_id = $2::uuid
+            ORDER BY created_at DESC
+            LIMIT 1
+          `,
+          [tenantAOwner.currentTenant.id, rateLimitedRuntime.route.id],
+        );
+        expect(failedLog.rows[0]?.status).toBe("failed");
+        expect(JSON.stringify(failedLog.rows[0]?.error ?? {})).toContain("PROVIDER_RATE_LIMIT");
+        expect(JSON.stringify(failedLog.rows[0]?.error ?? {})).not.toContain("sk-tenant-a-rate-limit-secret");
+
+        const crossTenantRuntime = await api.inject({
+          headers: {
+            authorization: `Bearer ${tenantAOwner.accessToken}`,
+          },
+          method: "POST",
+          payload: {
+            messages: [{ content: "cross tenant route", role: "user" }],
+            routeKey: "tenant-b-text",
+          },
+          url: "/api/v2/ai/text/generate",
+        });
+        expect(crossTenantRuntime.statusCode).toBe(404);
+
+        const viewerUserId = randomUUID();
+        const viewerPassword = "ViewerPass123!";
+        const viewerPasswordHash = await hashPassword(viewerPassword);
+
+        await withTenantTransaction(
+          { tenantId: tenantAOwner.currentTenant.id, userId: viewerUserId },
+          async (client) => {
+            await client.query(
+              `
+                INSERT INTO users (id, email, display_name, password_hash, updated_at)
+                VALUES ($1::uuid, $2, $3, $4, now())
+              `,
+              [viewerUserId, "runtime-viewer@example.com", "Runtime Viewer", viewerPasswordHash],
+            );
+            await client.query(
+              `
+                INSERT INTO tenant_memberships (tenant_id, user_id, role_key, status, joined_at, updated_at)
+                VALUES ($1::uuid, $2::uuid, 'viewer', 'active', now(), now())
+              `,
+              [tenantAOwner.currentTenant.id, viewerUserId],
+            );
+          },
+          appPool,
+        );
+
+        const viewerLogin = await api.inject({
+          method: "POST",
+          payload: {
+            email: "runtime-viewer@example.com",
+            password: viewerPassword,
+          },
+          url: "/api/v2/auth/login",
+        });
+        expect(viewerLogin.statusCode).toBe(200);
+
+        const forbiddenRuntime = await api.inject({
+          headers: {
+            authorization: `Bearer ${viewerLogin.json().accessToken}`,
+          },
+          method: "POST",
+          payload: {
+            messages: [{ content: "forbidden runtime", role: "user" }],
+            routeKey: "tenant-a-text",
+          },
+          url: "/api/v2/ai/text/generate",
+        });
+        expect(forbiddenRuntime.statusCode).toBe(403);
+
+        expect(tenantBRuntime.route.routeKey).toBe("tenant-b-text");
+        await api.close();
+      } finally {
+        await appPool.end();
+        await adminPool.end();
+        await mockProvider.close();
       }
     });
   });

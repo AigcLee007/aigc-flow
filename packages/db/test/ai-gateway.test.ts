@@ -186,6 +186,33 @@ describeWithDatabase("ai gateway migration and RLS", () => {
           );
           await client.query(
             `
+              INSERT INTO ai_routes (
+                tenant_id,
+                provider_id,
+                model_id,
+                route_key,
+                modality,
+                priority,
+                weight
+              )
+              VALUES (
+                $1::uuid,
+                $2::uuid,
+                $3::uuid,
+                'shared-runtime-route',
+                'text',
+                50,
+                200
+              )
+            `,
+            [
+              tenantA,
+              "11111111-1111-1111-1111-111111111111",
+              "22222222-2222-2222-2222-222222222222",
+            ],
+          );
+          await client.query(
+            `
               INSERT INTO ai_call_logs (
                 tenant_id,
                 provider_id,
@@ -343,6 +370,32 @@ describeWithDatabase("ai gateway migration and RLS", () => {
             "22222222-2222-2222-2222-222222222222",
           ],
         );
+        await adminPool.query(
+          `
+            INSERT INTO ai_routes (
+              tenant_id,
+              provider_id,
+              model_id,
+              route_key,
+              modality,
+              priority,
+              weight
+            )
+            VALUES (
+              NULL,
+              $1::uuid,
+              $2::uuid,
+              'shared-runtime-route',
+              'text',
+              1,
+              100
+            )
+          `,
+          [
+            "11111111-1111-1111-1111-111111111111",
+            "22222222-2222-2222-2222-222222222222",
+          ],
+        );
 
         const tenantAView = await withAppContextTransaction(
           appPool,
@@ -365,9 +418,24 @@ describeWithDatabase("ai gateway migration and RLS", () => {
                 RETURNING id::text AS id
               `,
             );
+            const runtimeRoutes = await client.query<{
+              route_key: string;
+              tenant_id: string | null;
+            }>(
+              `
+                SELECT route_key, tenant_id::text AS tenant_id
+                FROM ai_routes
+                WHERE route_key = 'shared-runtime-route'
+                ORDER BY
+                  CASE WHEN tenant_id IS NULL THEN 1 ELSE 0 END ASC,
+                  priority ASC,
+                  weight DESC
+              `,
+            );
             return {
               callLogs: callLogs.rows[0]?.total ?? 0,
               credentials: credentials.rows.map((row) => row.name),
+              runtimeRoute: runtimeRoutes.rows[0] ?? null,
               routes: routes.rows.map((row) => row.route_key),
               systemRouteUpdateCount: systemRouteUpdate.rowCount,
             };
@@ -377,7 +445,16 @@ describeWithDatabase("ai gateway migration and RLS", () => {
         expect(tenantAView).toEqual({
           callLogs: 1,
           credentials: ["Tenant A Credential"],
-          routes: ["system-text-default", "tenant-a-route"],
+          runtimeRoute: {
+            route_key: "shared-runtime-route",
+            tenant_id: tenantA,
+          },
+          routes: [
+            "shared-runtime-route",
+            "shared-runtime-route",
+            "system-text-default",
+            "tenant-a-route",
+          ],
           systemRouteUpdateCount: 0,
         });
 
@@ -405,7 +482,7 @@ describeWithDatabase("ai gateway migration and RLS", () => {
         expect(tenantBView).toEqual({
           callLogs: 1,
           credentials: ["Tenant B Credential"],
-          routes: ["system-text-default", "tenant-b-route"],
+          routes: ["shared-runtime-route", "system-text-default", "tenant-b-route"],
         });
 
         const noTenantView = await withAppContextTransaction(
@@ -432,7 +509,7 @@ describeWithDatabase("ai gateway migration and RLS", () => {
         expect(noTenantView).toEqual({
           callLogs: 0,
           credentials: 0,
-          routes: 1,
+          routes: 2,
         });
 
         await expect(

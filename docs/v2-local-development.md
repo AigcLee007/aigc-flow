@@ -59,6 +59,7 @@ The current Fastify v2 service exposes:
 - `PATCH /api/v2/admin/credentials/:credentialId`
 - `POST /api/v2/admin/credentials/:credentialId/rotate`
 - `DELETE /api/v2/admin/credentials/:credentialId`
+- `POST /api/v2/ai/text/generate`
 
 By default it listens on `http://localhost:3366`.
 
@@ -124,6 +125,25 @@ Rules:
 
 Development defaults now live in `.env.v2.example`. Production startup requires
 `CREDENTIAL_MASTER_KEY`; the API fails fast if it is missing.
+
+## PR-08 AI Gateway text runtime
+
+PR-08 adds the first runtime AI Gateway path for text generation only:
+
+- tenant-aware `RouteResolver`
+- OpenAI-compatible text adapter
+- credential decryption through the credential vault
+- normalized provider errors
+- redacted provider request / response logging
+- `ai_call_logs` writes for succeeded and failed text calls
+
+Current PR-08 limits:
+
+- image generation is not implemented yet
+- video generation is not implemented yet
+- workflow / worker integration is not implemented yet
+- billing settlement is not implemented yet
+- AI outputs are not ingested into S3 assets in this phase
 
 ## Configure S3 / MinIO asset storage
 
@@ -534,3 +554,48 @@ Deferred to PR-08:
 - actual provider adapters
 - runtime route resolution and dispatch
 - text / image / video generation calls
+
+## Try the PR-08 text generation runtime
+
+PR-08 adds a runtime endpoint for text generation:
+
+```bash
+curl -X POST http://localhost:3366/api/v2/ai/text/generate ^
+  -H "authorization: Bearer <access-token>" ^
+  -H "content-type: application/json" ^
+  -d "{\"routeKey\":\"default-text\",\"messages\":[{\"role\":\"user\",\"content\":\"hello\"}],\"temperature\":0.7,\"maxTokens\":100}"
+```
+
+The response shape is:
+
+```json
+{
+  "status": "succeeded",
+  "providerKey": "openai-compatible",
+  "modelKey": "gpt-4.1-mini",
+  "outputText": "hello from the mock provider",
+  "usage": {
+    "inputTokens": 1,
+    "outputTokens": 2,
+    "totalTokens": 3
+  }
+}
+```
+
+To configure an OpenAI-compatible route:
+
+1. Create a provider with `kind=openai-compatible` and `defaultBaseUrl`.
+2. Create a text model under that provider.
+3. Create an encrypted credential through `/api/v2/admin/credentials`.
+4. Create a tenant route through `/api/v2/admin/ai/routes` that references the provider, model, and credential.
+
+Route resolution rules in PR-08:
+
+- tenant route beats a system route with the same `routeKey`
+- if `routeKey` is omitted, the gateway chooses the active text route with the lowest `priority` and highest `weight`
+- only `status=active` routes are eligible
+
+Current runtime note:
+
+- the test suite uses mock HTTP providers only
+- PR-08 does not call real OpenAI, Gemini, or other external services

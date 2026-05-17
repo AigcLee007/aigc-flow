@@ -31,6 +31,17 @@ The current Fastify v2 service exposes:
 - `POST /api/v2/auth/refresh`
 - `POST /api/v2/auth/logout`
 - `GET /api/v2/auth/me`
+- `GET /api/v2/projects`
+- `POST /api/v2/projects`
+- `GET /api/v2/projects/:projectId`
+- `PATCH /api/v2/projects/:projectId`
+- `DELETE /api/v2/projects/:projectId`
+- `GET /api/v2/projects/:projectId/flows`
+- `POST /api/v2/projects/:projectId/flows`
+- `GET /api/v2/flows/:flowId`
+- `PATCH /api/v2/flows/:flowId`
+- `POST /api/v2/flows/:flowId/publish`
+- `GET /api/v2/flows/:flowId/versions`
 
 By default it listens on `http://localhost:3366`.
 
@@ -94,6 +105,7 @@ Current migrations:
 - `000001_extensions.sql`
 - `000002_iam.sql`
 - `000003_auth.sql`
+- `000004_projects_flows.sql`
 
 `000001_extensions.sql` installs:
 
@@ -114,11 +126,18 @@ Current migrations:
 - `auth_sessions`
 - `refresh_tokens`
 
+`000004_projects_flows.sql` adds the current project and flow model:
+
+- `projects`
+- `flows`
+- `flow_versions`
+
 PR-03 and PR-04 also introduce PostgreSQL helper functions for request context
 and the current base RLS policies for tenant-scoped tables.
 
-Business tables such as `projects`, `flows`, `workflow_runs`, and later runtime
-subsystems are intentionally deferred to later PRs.
+PR-05 keeps runtime execution tables such as `workflow_runs` and `node_runs`
+deferred. This phase only introduces authoring-time flow metadata, versioning,
+and compiled graph persistence.
 
 ## Run the `packages/db` tests
 
@@ -136,6 +155,8 @@ verify:
 - RLS isolation behavior
 - `withTenantTransaction`
 - auth-related RLS visibility for tenant lists
+- projects / flows / flow_versions migrations
+- tenant RLS isolation for projects / flows / flow_versions
 
 ## Run the `apps/api` auth tests
 
@@ -154,6 +175,26 @@ The auth tests exercise:
 - `me`
 - permission resolution
 - request context parsing
+
+PR-05 also adds project / flow API tests:
+
+```bash
+npm run test --workspace @aigc-flow/api
+```
+
+These cover:
+
+- project creation permissions
+- flow creation
+- flow publish and version history
+- cyclic graph rejection
+- tenant isolation for projects / flows / versions
+
+You can also run the standalone workflow compiler tests:
+
+```bash
+npm run test --workspace @aigc-flow/workflow-core
+```
 
 ## Tenant-scoped database access
 
@@ -175,6 +216,12 @@ Current hardening note:
 - PR-03 establishes the base RLS policies and uses `FORCE ROW LEVEL SECURITY`
   on the initial tenant-scoped tables so tests do not accidentally bypass RLS
   through the table owner.
+
+PR-05 extends that same RLS pattern to:
+
+- `projects`
+- `flows`
+- `flow_versions`
 
 ## Try the Auth v2 API
 
@@ -200,6 +247,43 @@ Get the current user:
 curl http://localhost:3366/api/v2/auth/me ^
   -H "authorization: Bearer <access-token>"
 ```
+
+Create a project:
+
+```bash
+curl -X POST http://localhost:3366/api/v2/projects ^
+  -H "authorization: Bearer <access-token>" ^
+  -H "content-type: application/json" ^
+  -d "{\"name\":\"Demo Project\",\"description\":\"Compiler demo\"}"
+```
+
+Create a flow:
+
+```bash
+curl -X POST http://localhost:3366/api/v2/projects/<project-id>/flows ^
+  -H "authorization: Bearer <access-token>" ^
+  -H "content-type: application/json" ^
+  -d "{\"title\":\"Demo Flow\",\"description\":\"First draft\"}"
+```
+
+Publish a flow version:
+
+```bash
+curl -X POST http://localhost:3366/api/v2/flows/<flow-id>/publish ^
+  -H "authorization: Bearer <access-token>" ^
+  -H "content-type: application/json" ^
+  -d "{\"graph\":{\"nodes\":[{\"id\":\"input\",\"type\":\"input\"},{\"id\":\"output\",\"type\":\"output\"}],\"edges\":[{\"source\":\"input\",\"target\":\"output\"}]}}"
+```
+
+Publish stores:
+
+- the original `graph_json`
+- the compiled `compiled_graph_json`
+- a stable `checksum`
+- an immutable `flow_versions` row
+
+When the same flow is published with an unchanged checksum, PR-05 reuses the
+existing version instead of creating a duplicate row.
 
 Current auth storage note:
 

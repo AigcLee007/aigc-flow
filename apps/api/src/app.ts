@@ -6,6 +6,10 @@ import { getApiEnv, type ApiEnv } from "./config/env.js";
 import { registerRequestContext } from "./http/request-context.js";
 import { registerAuthRoutes } from "./modules/auth/auth.routes.js";
 import { AuthService } from "./modules/auth/auth.service.js";
+import { registerFlowRoutes } from "./modules/flows/flows.routes.js";
+import { FlowsService } from "./modules/flows/flows.service.js";
+import { registerProjectRoutes } from "./modules/projects/projects.routes.js";
+import { ProjectsService } from "./modules/projects/projects.service.js";
 
 type PgPool = ReturnType<typeof createPgPool>;
 
@@ -21,12 +25,16 @@ export function buildApp(options?: {
     env,
     pool,
   });
+  const projectsService = new ProjectsService({ pool });
+  const flowsService = new FlowsService({ pool });
 
   const app = Fastify({
     logger: options?.logger ?? true,
   });
 
   app.decorate("authService", authService);
+  app.decorate("projectsService", projectsService);
+  app.decorate("flowsService", flowsService);
   registerRequestContext(app, authService);
 
   app.addHook("onClose", async () => {
@@ -40,6 +48,8 @@ export function buildApp(options?: {
   });
 
   registerAuthRoutes(app);
+  registerProjectRoutes(app);
+  registerFlowRoutes(app);
 
   return app;
 }

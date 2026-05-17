@@ -23,6 +23,8 @@ generation-records.json
 announcement.json
 uploads/
 storage/
+!packages/storage/
+!packages/storage/**
 scratch/
 runtime-logs/
 .tmp-*

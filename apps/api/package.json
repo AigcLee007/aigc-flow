@@ -1,0 +1,20 @@
+{
+  "name": "@aigc-flow/api",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/main.ts",
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/main.js",
+    "test": "vitest run --config vitest.config.ts"
+  },
+  "dependencies": {
+    "@aigc-flow/db": "0.0.0",
+    "argon2": "^0.44.0",
+    "fastify": "^5.6.1",
+    "jose": "^6.1.2",
+    "pg": "^8.16.3",
+    "zod": "^4.1.12"
+  }
+}

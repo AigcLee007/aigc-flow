@@ -53,3 +53,14 @@ If you already have `auth-data.json` and `billing-data.json`, you can import the
 `npm run migrate:mysql`
 
 The server will use MySQL automatically when MySQL env vars are present. If MySQL is not configured, it falls back to the legacy JSON stores for local development.
+
+## v2 skeleton
+
+PR-01 adds a non-invasive v2 monorepo skeleton alongside the legacy runtime.
+The legacy frontend and `server.cjs` flow remain unchanged in this phase.
+
+See [docs/v2-local-development.md](./docs/v2-local-development.md) for:
+
+- local PostgreSQL / Redis / MinIO infra startup
+- minimal `apps/api` startup
+- minimal `apps/worker` startup

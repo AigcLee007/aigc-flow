@@ -1,0 +1,9 @@
+{
+  "name": "@aigc-flow/workflow-core",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "build": "tsc -p tsconfig.json"
+  }
+}

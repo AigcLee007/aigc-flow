@@ -1,22 +1,34 @@
 import { fileURLToPath } from "node:url";
 
+import { CredentialVault, DatabaseTextGenerationRuntime } from "@aigc-flow/ai-gateway-core";
+import { createPgPool } from "@aigc-flow/db";
 import {
   closeRedisConnection,
   createQueueFactory,
   createRedisConnection,
+  QUEUE_NAMES,
+  type NodeExecuteJobPayload,
   type QueueName,
 } from "@aigc-flow/redis";
 import type { Redis } from "ioredis";
+import type { Pool } from "pg";
 
 import { getWorkerEnv, type WorkerEnv } from "./config/env.js";
 import { createConsoleWorkerLogger, type WorkerLogger } from "./logger.js";
 import { registerWorkerQueues } from "./queues/registry.js";
+import { WorkflowNodeExecutionService } from "./workflow-runtime/service.js";
 
 type Closable = {
   close: () => Promise<unknown>;
 };
 
 type QueueFactoryLike = {
+  createQueue: (
+    name: QueueName,
+  ) => {
+    add: (name: string, data: NodeExecuteJobPayload) => Promise<unknown>;
+    close: () => Promise<unknown>;
+  };
   createQueueEvents: (name: QueueName) => Closable;
   createWorker: (
     name: QueueName,
@@ -33,12 +45,16 @@ export type WorkerRuntime = {
 export function createWorkerRuntime(options?: {
   env?: WorkerEnv;
   logger?: WorkerLogger;
+  pool?: Pool;
   queueFactory?: QueueFactoryLike;
   redisConnection?: Redis;
+  workflowNodeExecutionService?: WorkflowNodeExecutionService;
 }) {
   const env = options?.env ?? getWorkerEnv();
   const logger = options?.logger ?? createConsoleWorkerLogger();
+  const ownedPool = !options?.pool;
   const ownedRedisConnection = !options?.redisConnection;
+  const pool = options?.pool ?? createPgPool();
   const redisConnection =
     options?.redisConnection ??
     createRedisConnection({
@@ -50,11 +66,27 @@ export function createWorkerRuntime(options?: {
       connection: redisConnection,
       prefix: env.queuePrefix,
     });
+  const credentialVault = new CredentialVault({
+    keyVersion: env.credentialKeyVersion,
+    masterKey: env.credentialMasterKey,
+  });
+  const nodeExecuteQueue = queueFactory.createQueue(QUEUE_NAMES.nodeExecute);
+  const workflowNodeExecutionService =
+    options?.workflowNodeExecutionService ??
+    new WorkflowNodeExecutionService({
+      nodeExecuteQueue,
+      pool,
+      textGenerationRuntime: new DatabaseTextGenerationRuntime({
+        credentialVault,
+        pool,
+      }),
+    });
 
   const registration = registerWorkerQueues({
     concurrency: env.workerConcurrency,
     logger,
     queueFactory,
+    workflowNodeExecutionService,
   });
 
   let shuttingDown = false;
@@ -75,9 +107,14 @@ export function createWorkerRuntime(options?: {
 
     await Promise.all(registration.workers.map((worker) => worker.close()));
     await Promise.all(registration.queueEvents.map((queueEvents) => queueEvents.close()));
+    await nodeExecuteQueue.close();
 
     if (ownedRedisConnection) {
       await closeRedisConnection(redisConnection);
+    }
+
+    if (ownedPool) {
+      await pool.end();
     }
   }
 

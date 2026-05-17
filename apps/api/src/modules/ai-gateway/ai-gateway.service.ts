@@ -1,11 +1,8 @@
 import { createPgPool, withTenantTransaction } from "@aigc-flow/db";
 import {
-  AiGateway,
   AiGatewayError,
+  DatabaseTextGenerationRuntime,
   CredentialVault,
-  OpenAiCompatibleTextAdapter,
-  RouteResolver,
-  redactValue,
   type AiGatewayTextResult,
   type CredentialResponseView,
   type ResolvedRoute,
@@ -250,22 +247,20 @@ function mapRoute(row: RouteRecord): RouteView {
 }
 
 export class AiGatewayAdminService {
-  readonly aiGateway: AiGateway;
   readonly credentialVault: CredentialVault;
   readonly pool: PgPool;
-  readonly routeResolver: RouteResolver;
+  readonly textRuntime: DatabaseTextGenerationRuntime;
 
   constructor(options: {
     credentialVault: CredentialVault;
     pool?: PgPool;
   }) {
-    this.aiGateway = new AiGateway({
-      openai: new OpenAiCompatibleTextAdapter(),
-      "openai-compatible": new OpenAiCompatibleTextAdapter(),
-    });
     this.credentialVault = options.credentialVault;
     this.pool = options.pool ?? createPgPool();
-    this.routeResolver = new RouteResolver();
+    this.textRuntime = new DatabaseTextGenerationRuntime({
+      credentialVault: this.credentialVault,
+      pool: this.pool,
+    });
   }
 
   async listProviders(): Promise<ProviderView[]> {
@@ -818,71 +813,7 @@ export class AiGatewayAdminService {
     context: TenantContext,
     request: TextGenerationRequest,
   ): Promise<GenerateTextResultView> {
-    const routes = await this.listRuntimeRoutes(context, request.routeKey ?? null);
-    const selectedRoute = this.routeResolver.resolveTextRoute({
-      routeKey: request.routeKey ?? null,
-      routes,
-    });
-
-    if (
-      !selectedRoute.credential.id ||
-      !selectedRoute.credential.encryptedSecret ||
-      !selectedRoute.credential.nonce ||
-      !selectedRoute.credential.authTag
-    ) {
-      throw new AiGatewayError({
-        code: "CREDENTIAL_REQUIRED",
-        message: "The selected route does not have a usable credential",
-        statusCode: 400,
-      });
-    }
-
-    const apiKey = this.credentialVault.getSecretForProviderCall({
-      authTag: selectedRoute.credential.authTag,
-      encryptedSecret: selectedRoute.credential.encryptedSecret,
-      nonce: selectedRoute.credential.nonce,
-    });
-
-    const startedAt = Date.now();
-
-    try {
-      const result = await this.aiGateway.generateText({
-        apiKey,
-        request,
-        route: selectedRoute,
-      });
-
-      await this.insertAiCallLog({
-        error: null,
-        inputTokens: result.usage.inputTokens,
-        latencyMs: Date.now() - startedAt,
-        modelId: selectedRoute.model.id,
-        outputTokens: result.usage.outputTokens,
-        providerId: selectedRoute.provider.id,
-        routeId: selectedRoute.routeId,
-        status: "succeeded",
-        tenantId: context.tenantId,
-      });
-
-      return this.mapGenerateTextResult(result);
-    } catch (error) {
-      const normalizedError = this.toAiGatewayError(error);
-      await this.insertAiCallLog({
-        error: {
-          code: normalizedError.code,
-          message: normalizedError.message,
-          providerRequest: redactValue(normalizedError.providerRequest, [apiKey]),
-          providerResponse: redactValue(normalizedError.providerResponse, [apiKey]),
-        },
-        latencyMs: Date.now() - startedAt,
-        modelId: selectedRoute.model.id,
-        providerId: selectedRoute.provider.id,
-        routeId: selectedRoute.routeId,
-        status: "failed",
-        tenantId: context.tenantId,
-      });
-      throw normalizedError;
-    }
+    return this.mapGenerateTextResult(await this.textRuntime.generateText(context, request));
   }
 
   private async ensureProviderExists(providerId: string, client?: PoolClient): Promise<void> {

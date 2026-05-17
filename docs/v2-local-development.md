@@ -61,6 +61,10 @@ The current Fastify v2 service exposes:
 - `DELETE /api/v2/admin/credentials/:credentialId`
 - `POST /api/v2/ai/text/generate`
 - `GET /api/v2/admin/queues/health`
+- `POST /api/v2/flows/:flowId/runs`
+- `GET /api/v2/workflow-runs/:runId`
+- `GET /api/v2/workflow-runs/:runId/events`
+- `POST /api/v2/workflow-runs/:runId/cancel`
 
 By default it listens on `http://localhost:3366`.
 
@@ -92,6 +96,29 @@ Current PR-09 limits:
 - no real provider polling
 - no real asset ingest
 - no real billing settlement
+
+## PR-10 workflow run minimal loop
+
+PR-10 upgrades the worker and API from queue skeletons to the first minimal
+backend workflow execution loop:
+
+- `000007_workflow_runs.sql`
+- PostgreSQL `workflow_runs`, `node_runs`, and `workflow_run_events`
+- `POST /api/v2/flows/:flowId/runs`
+- `GET /api/v2/workflow-runs/:runId`
+- `GET /api/v2/workflow-runs/:runId/events`
+- `POST /api/v2/workflow-runs/:runId/cancel`
+- backend worker execution for `input`, `text.generate`, and `output`
+- PostgreSQL-backed workflow state transitions and event sequencing
+
+Current PR-10 limits:
+
+- only `input`, `text.generate`, and `output` nodes are supported
+- SSE / realtime event streaming is deferred to PR-11
+- image and video execution are deferred to PR-12
+- billing reserve / settle / refund are not implemented yet
+- provider polling remains a later phase
+- worker retries stay minimal in this phase
 
 ## Configure `DATABASE_URL`
 
@@ -275,6 +302,7 @@ Current migrations:
 - `000004_projects_flows.sql`
 - `000005_assets.sql`
 - `000006_ai_gateway.sql`
+- `000007_workflow_runs.sql`
 
 `000001_extensions.sql` installs:
 
@@ -314,6 +342,12 @@ schema:
 - `api_credentials`
 - `ai_routes`
 - `ai_call_logs`
+
+`000007_workflow_runs.sql` adds the first backend workflow runtime tables:
+
+- `workflow_runs`
+- `node_runs`
+- `workflow_run_events`
 
 PR-03 and PR-04 also introduce PostgreSQL helper functions for request context
 and the current base RLS policies for tenant-scoped tables.
@@ -388,6 +422,10 @@ These cover:
 - masked credential responses without secret leakage
 - provider / model / route admin APIs
 - tenant isolation for credentials and routes
+- workflow run creation
+- workflow run reads with `node_runs`
+- workflow run event listing with `afterSequence`
+- workflow run cancel behavior
 
 You can also run the standalone workflow compiler tests:
 

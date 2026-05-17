@@ -1,4 +1,5 @@
 export { AiGateway } from "./ai-gateway.js";
+export { DatabaseTextGenerationRuntime } from "./database-text-runtime.js";
 export {
   AiGatewayError,
 } from "./errors.js";

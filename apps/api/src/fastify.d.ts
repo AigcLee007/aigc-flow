@@ -10,6 +10,7 @@ import type { AssetsService } from "./modules/assets/assets.service.js";
 import type { FlowsService } from "./modules/flows/flows.service.js";
 import type { ProjectsService } from "./modules/projects/projects.service.js";
 import type { QueueHealthService } from "./modules/queues/queues.service.js";
+import type { WorkflowRunsService } from "./modules/workflow-runs/workflow-runs.service.js";
 
 declare module "fastify" {
   interface FastifyInstance {
@@ -21,6 +22,7 @@ declare module "fastify" {
     projectsService: ProjectsService;
     queueHealthService: QueueHealthService;
     storageProvider: StorageProvider;
+    workflowRunsService: WorkflowRunsService;
   }
 
   interface FastifyRequest {

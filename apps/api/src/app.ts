@@ -2,7 +2,12 @@ import Fastify from "fastify";
 
 import { CredentialVault } from "@aigc-flow/ai-gateway-core";
 import { createPgPool } from "@aigc-flow/db";
-import { createQueueFactory, createRedisConnection } from "@aigc-flow/redis";
+import {
+  QUEUE_NAMES,
+  closeRedisConnection,
+  createQueueFactory,
+  createRedisConnection,
+} from "@aigc-flow/redis";
 import { S3StorageProvider, type StorageProvider } from "@aigc-flow/storage";
 
 import { getApiEnv, type ApiEnv } from "./config/env.js";
@@ -19,6 +24,8 @@ import { registerProjectRoutes } from "./modules/projects/projects.routes.js";
 import { ProjectsService } from "./modules/projects/projects.service.js";
 import { registerQueueRoutes } from "./modules/queues/queues.routes.js";
 import { QueueHealthService } from "./modules/queues/queues.service.js";
+import { registerWorkflowRunRoutes } from "./modules/workflow-runs/workflow-runs.routes.js";
+import { WorkflowRunsService } from "./modules/workflow-runs/workflow-runs.service.js";
 
 type PgPool = ReturnType<typeof createPgPool>;
 
@@ -28,14 +35,22 @@ export function buildApp(options?: {
   pool?: PgPool;
   queueHealthService?: QueueHealthService;
   storageProvider?: StorageProvider;
+  workflowRunsService?: WorkflowRunsService;
 }) {
   const env = options?.env ?? getApiEnv();
   const ownedPool = !options?.pool;
   const ownedQueueHealthService = !options?.queueHealthService;
+  const ownedWorkflowRunsService = !options?.workflowRunsService;
   const pool = options?.pool ?? createPgPool();
-  const queueHealthRedisConnection = ownedQueueHealthService
+  const appRedisConnection = ownedQueueHealthService || ownedWorkflowRunsService
     ? createRedisConnection({
         redisUrl: env.redisUrl,
+      })
+    : null;
+  const appQueueFactory = appRedisConnection
+    ? createQueueFactory({
+        connection: appRedisConnection,
+        prefix: env.queuePrefix,
       })
     : null;
   const storageProvider =
@@ -67,14 +82,18 @@ export function buildApp(options?: {
   const queueHealthService =
     options?.queueHealthService ??
     new QueueHealthService(
-      queueHealthRedisConnection!,
+      appRedisConnection!,
       {
-        queueFactory: createQueueFactory({
-          connection: queueHealthRedisConnection!,
-          prefix: env.queuePrefix,
-        }),
+        queueFactory: appQueueFactory!,
       },
     );
+  const nodeExecuteQueue = appQueueFactory?.createQueue(QUEUE_NAMES.nodeExecute);
+  const workflowRunsService =
+    options?.workflowRunsService ??
+    new WorkflowRunsService({
+      nodeExecuteQueue: nodeExecuteQueue!,
+      pool,
+    });
   const projectsService = new ProjectsService({ pool });
   const flowsService = new FlowsService({ pool });
 
@@ -90,6 +109,7 @@ export function buildApp(options?: {
   app.decorate("flowsService", flowsService);
   app.decorate("queueHealthService", queueHealthService);
   app.decorate("storageProvider", storageProvider);
+  app.decorate("workflowRunsService", workflowRunsService);
   registerRequestContext(app, authService);
 
   app.addHook("onClose", async () => {
@@ -97,8 +117,16 @@ export function buildApp(options?: {
       await pool.end();
     }
 
+    if (ownedWorkflowRunsService) {
+      await nodeExecuteQueue?.close();
+    }
+
     if (ownedQueueHealthService) {
       await queueHealthService.close();
+    }
+
+    if (!ownedQueueHealthService && appRedisConnection) {
+      await closeRedisConnection(appRedisConnection);
     }
   });
 
@@ -112,6 +140,7 @@ export function buildApp(options?: {
   registerProjectRoutes(app);
   registerFlowRoutes(app);
   registerQueueRoutes(app);
+  registerWorkflowRunRoutes(app);
 
   return app;
 }

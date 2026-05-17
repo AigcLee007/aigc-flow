@@ -14,5 +14,9 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "test": "vitest run --config vitest.config.ts"
+  },
+  "dependencies": {
+    "@aigc-flow/db": "0.0.0",
+    "pg": "^8.16.3"
   }
 }

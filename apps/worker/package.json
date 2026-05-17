@@ -10,6 +10,8 @@
     "test": "vitest run --config vitest.config.ts"
   },
   "dependencies": {
+    "@aigc-flow/ai-gateway-core": "0.0.0",
+    "@aigc-flow/db": "0.0.0",
     "@aigc-flow/redis": "0.0.0"
   }
 }

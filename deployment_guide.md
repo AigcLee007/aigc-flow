@@ -87,3 +87,11 @@
 *   **API 错误**：请确保您在网站的【设置】中正确输入了 API Key。
 
 祝您部署成功！如有疑问请随时咨询。
+# Legacy Deployment Note
+
+This document describes the legacy `server.cjs` deployment path only.
+
+- It is no longer the default production entry for v2.
+- The v2 production entry is `apps/api` plus `apps/worker`.
+- Use `npm run start:v2`, `npm run start:api`, and `npm run start:worker` for
+  the current runtime path.

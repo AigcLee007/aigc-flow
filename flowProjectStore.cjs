@@ -1,3 +1,9 @@
+/*
+ * Legacy flow project store only.
+ *
+ * This file is kept for migration support and explicit legacy fallback usage.
+ * v2 production authoring data lives in PostgreSQL projects/flows/flow_versions.
+ */
 const fs = require("fs");
 const path = require("path");
 const { randomBytes } = require("crypto");

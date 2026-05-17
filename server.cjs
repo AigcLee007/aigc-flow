@@ -1,3 +1,32 @@
+/*
+ * Legacy runtime entrypoint only.
+ *
+ * This file is preserved for migration support and explicit rollback/debug use.
+ * It is not the v2 production entrypoint.
+ *
+ * v2 production entrypoints:
+ * - apps/api
+ * - apps/worker
+ *
+ * Use:
+ * - npm run start:v2
+ * - npm run start:api
+ * - npm run start:worker
+ *
+ * To explicitly allow this legacy server in production, set:
+ * - ALLOW_LEGACY_SERVER=true
+ */
+if (process.env.NODE_ENV === "production" && process.env.ALLOW_LEGACY_SERVER !== "true") {
+  console.error(
+    [
+      "server.cjs is legacy-only and is no longer the production entrypoint.",
+      "Use npm run start:v2, npm run start:api, or npm run start:worker instead.",
+      "Set ALLOW_LEGACY_SERVER=true only for an explicit legacy fallback.",
+    ].join(" "),
+  );
+  process.exit(1);
+}
+
 const express = require("express");
 const cors = require("cors");
 const axios = require("axios");

@@ -4,16 +4,57 @@
 
 # Run and deploy your AI Studio app
 
-This project now supports:
+This repository now has two runtime tracks:
 
-- multi-route image generation
-- email login
-- points billing
-- MySQL-backed auth and billing storage
+- v2 production runtime:
+  - `apps/api`
+  - `apps/worker`
+  - PostgreSQL + Redis/BullMQ + S3-compatible storage
+- legacy fallback runtime:
+  - `server.cjs`
+  - old MySQL / file-backed stores
+  - retained only for migration support and explicit rollback/debug use
 
 View your app in AI Studio: https://ai.studio/apps/drive/1MB-T6-X8pVklMaEwAk7UBHpKmeGDrBJi
 
 ## Run locally
+
+### v2 development and production-path startup
+
+Use the v2 services for all current production-path work:
+
+1. Install dependencies:
+   `npm install`
+2. Start local infra:
+   `npm run dev:infra`
+3. Start the v2 API:
+   `npm run dev:api`
+4. Start the v2 worker:
+   `npm run dev:worker`
+5. For the combined v2 production-style entry locally:
+   `npm run start:v2`
+
+Current root scripts:
+
+- `npm start` -> v2 combined entry
+- `npm run start:v2` -> v2 API + v2 worker
+- `npm run start:api` -> v2 API only
+- `npm run start:worker` -> v2 worker only
+
+See [docs/v2-local-development.md](./docs/v2-local-development.md) for the
+current v2 setup and endpoints.
+
+### Legacy fallback runtime
+
+The legacy runtime is no longer the default production path.
+
+- `npm run legacy:server`
+- `npm run legacy:start`
+
+Use legacy runtime commands only for migration support, rollback drills, or
+explicit debugging of the old stack.
+
+### Legacy local setup
 
 **Prerequisites:** Node.js
 
@@ -26,8 +67,8 @@ View your app in AI Studio: https://ai.studio/apps/drive/1MB-T6-X8pVklMaEwAk7UBH
    If you use docker-compose, the default host-side ports are:
    `PORT=3365`
    `MYSQL_HOST_PORT=3310`
-4. Start the app:
-   `npm run start`
+4. Start the legacy app only if you explicitly need it:
+   `npm run legacy:start`
 
 ### Resend email
 
@@ -52,15 +93,17 @@ If you already have `auth-data.json` and `billing-data.json`, you can import the
 
 `npm run migrate:mysql`
 
-The server will use MySQL automatically when MySQL env vars are present. If MySQL is not configured, it falls back to the legacy JSON stores for local development.
+The legacy server will use MySQL automatically when MySQL env vars are present.
+If MySQL is not configured, it falls back to the legacy JSON stores for local
+development. This is not part of the v2 production runtime.
 
-## v2 skeleton
+## v2 runtime
 
-PR-01 adds a non-invasive v2 monorepo skeleton alongside the legacy runtime.
-The legacy frontend and `server.cjs` flow remain unchanged in this phase.
+The v2 production entry is now:
 
-See [docs/v2-local-development.md](./docs/v2-local-development.md) for:
+- `apps/api`
+- `apps/worker`
 
-- local PostgreSQL / Redis / MinIO infra startup
-- minimal `apps/api` startup
-- minimal `apps/worker` startup
+The legacy frontend and `graphExecutor` remain in the repository for migration
+compatibility, but backend production execution belongs to the v2 API and
+worker stack.

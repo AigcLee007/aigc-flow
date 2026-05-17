@@ -1,3 +1,9 @@
+/*
+ * Legacy local generated asset service only.
+ *
+ * This file is kept for migration support and explicit legacy fallback usage.
+ * v2 production assets must use S3-compatible storage plus assets metadata.
+ */
 const crypto = require("crypto");
 const fs = require("fs");
 const path = require("path");

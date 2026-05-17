@@ -1,3 +1,9 @@
+/*
+ * Legacy MySQL/file runtime helper only.
+ *
+ * This module remains for migration support and explicit legacy fallback paths.
+ * v2 production runtime must use PostgreSQL via packages/db instead.
+ */
 const mysql = require("mysql2/promise");
 
 const MYSQL_URL = String(process.env.MYSQL_URL || "").trim();

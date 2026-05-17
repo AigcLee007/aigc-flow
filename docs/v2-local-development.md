@@ -3,6 +3,44 @@
 This document covers the current v2 bootstrap work. The legacy runtime still
 exists in parallel, and the v2 services are being introduced phase by phase.
 
+## PR-17 production cutover
+
+PR-17 completes the production-entry cutover for the v2 backend:
+
+- v2 production entry:
+  - `apps/api`
+  - `apps/worker`
+- root runtime scripts:
+  - `npm start`
+  - `npm run start:v2`
+  - `npm run start:api`
+  - `npm run start:worker`
+- legacy runtime scripts:
+  - `npm run legacy:server`
+  - `npm run legacy:start`
+
+Legacy runtime notes:
+
+- `server.cjs` is now legacy-only and is no longer the default production entry
+- legacy `*Store*.cjs` files remain in the repository for migration support and
+  explicit rollback/debug use
+- `generatedAssetService.cjs` is no longer a v2 production asset path
+- PR-15 migration scripts remain supported
+- PR-17 does not delete legacy data files
+
+Current v2 production data sources:
+
+- PostgreSQL
+- Redis / BullMQ
+- S3-compatible object storage
+
+Rollback note:
+
+- if an explicit fallback is required, start the old path with
+  `npm run legacy:server` or `npm run legacy:start`
+- production use of the legacy runtime is discouraged and now requires
+  `ALLOW_LEGACY_SERVER=true` when `NODE_ENV=production`
+
 ## Start local infrastructure
 
 ```bash
@@ -74,6 +112,14 @@ The current Fastify v2 service exposes:
 - `GET /api/v2/admin/metrics`
 
 By default it listens on `http://localhost:3366`.
+
+For the production-style runtime entry from the repository root:
+
+```bash
+npm run start:api
+npm run start:worker
+npm run start:v2
+```
 
 ## Start the v2 worker skeleton
 
@@ -455,6 +501,15 @@ Current PR-16 limits:
 - workflow run event rows still do not persist `trace_id`
 - legacy runtime removal is still out of scope
 - PR-17 remains the phase for legacy production entry cleanup
+
+## PR-17 legacy runtime status
+
+PR-17 changes the runtime boundary, not the v2 business semantics:
+
+- `server.cjs` is no longer the default production entry
+- root `npm start` now points to the v2 API + worker runtime
+- legacy `server.cjs` and old stores remain available only as fallback tooling
+- no external runtime behavior was added to the v2 API or worker in this phase
 
 ## Configure `DATABASE_URL`
 

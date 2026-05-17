@@ -1,3 +1,9 @@
+/*
+ * Legacy video route store only.
+ *
+ * This file is kept for migration support and explicit legacy fallback usage.
+ * v2 production provider routing lives in PostgreSQL AI Gateway tables.
+ */
 const staticCatalog = require("./config/videoRoutes.json");
 const { toNonNegativePoint } = require("./pointMath.cjs");
 const { fromDbDateTime, getPool, isMySqlConfigured, toDbDateTime, withTransaction } = require("./db.cjs");

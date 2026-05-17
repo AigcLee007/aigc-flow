@@ -5,6 +5,8 @@ export type ApiEnv = {
   jwtAccessSecret: string;
   jwtRefreshSecret: string;
   nodeEnv: string;
+  queuePrefix: string;
+  redisUrl: string;
   refreshTokenTtlSeconds: number;
   s3AccessKeyId: string;
   s3Bucket: string;
@@ -17,6 +19,8 @@ export type ApiEnv = {
 const DEV_ACCESS_SECRET = "dev_access_secret_change_me";
 const DEV_CREDENTIAL_KEY_VERSION = "v1";
 const DEV_CREDENTIAL_MASTER_KEY = "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=";
+const DEV_QUEUE_PREFIX = "aigc-flow:v2";
+const DEV_REDIS_URL = "redis://localhost:6379";
 const DEV_REFRESH_SECRET = "dev_refresh_secret_change_me";
 const DEV_S3_ACCESS_KEY_ID = "minio";
 const DEV_S3_BUCKET = "aigc-flow-dev";
@@ -37,6 +41,12 @@ export function getApiEnv(): ApiEnv {
   const credentialKeyVersion =
     process.env.CREDENTIAL_KEY_VERSION?.trim() ||
     DEV_CREDENTIAL_KEY_VERSION;
+  const redisUrl =
+    process.env.REDIS_URL?.trim() ||
+    (isProduction ? "" : DEV_REDIS_URL);
+  const queuePrefix =
+    process.env.QUEUE_PREFIX?.trim() ||
+    DEV_QUEUE_PREFIX;
   const jwtRefreshSecret =
     process.env.JWT_REFRESH_SECRET?.trim() ||
     (isProduction ? "" : DEV_REFRESH_SECRET);
@@ -51,6 +61,10 @@ export function getApiEnv(): ApiEnv {
 
   if (!credentialMasterKey) {
     throw new Error("CREDENTIAL_MASTER_KEY is required to start the v2 API");
+  }
+
+  if (!redisUrl) {
+    throw new Error("REDIS_URL is required to start the v2 API");
   }
 
   const s3Endpoint =
@@ -99,6 +113,8 @@ export function getApiEnv(): ApiEnv {
     jwtAccessSecret,
     jwtRefreshSecret,
     nodeEnv,
+    queuePrefix,
+    redisUrl,
     refreshTokenTtlSeconds: 60 * 60 * 24 * 7,
     s3AccessKeyId,
     s3Bucket,

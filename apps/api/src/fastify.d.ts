@@ -9,6 +9,7 @@ import type { AiGatewayAdminService } from "./modules/ai-gateway/ai-gateway.serv
 import type { AssetsService } from "./modules/assets/assets.service.js";
 import type { FlowsService } from "./modules/flows/flows.service.js";
 import type { ProjectsService } from "./modules/projects/projects.service.js";
+import type { QueueHealthService } from "./modules/queues/queues.service.js";
 
 declare module "fastify" {
   interface FastifyInstance {
@@ -18,6 +19,7 @@ declare module "fastify" {
     credentialVault: CredentialVault;
     flowsService: FlowsService;
     projectsService: ProjectsService;
+    queueHealthService: QueueHealthService;
     storageProvider: StorageProvider;
   }
 

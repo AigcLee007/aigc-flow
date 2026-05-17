@@ -2,6 +2,7 @@ import Fastify from "fastify";
 
 import { CredentialVault } from "@aigc-flow/ai-gateway-core";
 import { createPgPool } from "@aigc-flow/db";
+import { createQueueFactory, createRedisConnection } from "@aigc-flow/redis";
 import { S3StorageProvider, type StorageProvider } from "@aigc-flow/storage";
 
 import { getApiEnv, type ApiEnv } from "./config/env.js";
@@ -16,6 +17,8 @@ import { registerFlowRoutes } from "./modules/flows/flows.routes.js";
 import { FlowsService } from "./modules/flows/flows.service.js";
 import { registerProjectRoutes } from "./modules/projects/projects.routes.js";
 import { ProjectsService } from "./modules/projects/projects.service.js";
+import { registerQueueRoutes } from "./modules/queues/queues.routes.js";
+import { QueueHealthService } from "./modules/queues/queues.service.js";
 
 type PgPool = ReturnType<typeof createPgPool>;
 
@@ -23,11 +26,18 @@ export function buildApp(options?: {
   env?: ApiEnv;
   logger?: boolean;
   pool?: PgPool;
+  queueHealthService?: QueueHealthService;
   storageProvider?: StorageProvider;
 }) {
   const env = options?.env ?? getApiEnv();
   const ownedPool = !options?.pool;
+  const ownedQueueHealthService = !options?.queueHealthService;
   const pool = options?.pool ?? createPgPool();
+  const queueHealthRedisConnection = ownedQueueHealthService
+    ? createRedisConnection({
+        redisUrl: env.redisUrl,
+      })
+    : null;
   const storageProvider =
     options?.storageProvider ??
     new S3StorageProvider({
@@ -54,6 +64,17 @@ export function buildApp(options?: {
     pool,
     storageProvider,
   });
+  const queueHealthService =
+    options?.queueHealthService ??
+    new QueueHealthService(
+      queueHealthRedisConnection!,
+      {
+        queueFactory: createQueueFactory({
+          connection: queueHealthRedisConnection!,
+          prefix: env.queuePrefix,
+        }),
+      },
+    );
   const projectsService = new ProjectsService({ pool });
   const flowsService = new FlowsService({ pool });
 
@@ -67,12 +88,17 @@ export function buildApp(options?: {
   app.decorate("credentialVault", credentialVault);
   app.decorate("projectsService", projectsService);
   app.decorate("flowsService", flowsService);
+  app.decorate("queueHealthService", queueHealthService);
   app.decorate("storageProvider", storageProvider);
   registerRequestContext(app, authService);
 
   app.addHook("onClose", async () => {
     if (ownedPool) {
       await pool.end();
+    }
+
+    if (ownedQueueHealthService) {
+      await queueHealthService.close();
     }
   });
 
@@ -85,6 +111,7 @@ export function buildApp(options?: {
   registerAssetRoutes(app);
   registerProjectRoutes(app);
   registerFlowRoutes(app);
+  registerQueueRoutes(app);
 
   return app;
 }

@@ -60,6 +60,7 @@ The current Fastify v2 service exposes:
 - `POST /api/v2/admin/credentials/:credentialId/rotate`
 - `DELETE /api/v2/admin/credentials/:credentialId`
 - `POST /api/v2/ai/text/generate`
+- `GET /api/v2/admin/queues/health`
 
 By default it listens on `http://localhost:3366`.
 
@@ -69,8 +70,28 @@ By default it listens on `http://localhost:3366`.
 npm run dev:worker
 ```
 
-The worker only boots and prints a ready message in PR-01/PR-02. It does not
-connect to Redis or consume queues yet.
+PR-09 upgrades the worker from a boot-only placeholder to the first Redis /
+BullMQ skeleton:
+
+- Redis connection bootstrapping from `REDIS_URL`
+- queue registration for:
+  - `workflow.start`
+  - `node.execute`
+  - `provider.poll`
+  - `asset.ingest`
+  - `billing.settle`
+- processor skeletons that only log and return no-op results
+- graceful shutdown on `SIGINT` / `SIGTERM`
+
+Current PR-09 limits:
+
+- no `workflow_runs`
+- no `node_runs`
+- no workflow engine execution
+- no AI Gateway runtime calls from workers
+- no real provider polling
+- no real asset ingest
+- no real billing settlement
 
 ## Configure `DATABASE_URL`
 
@@ -86,6 +107,27 @@ PowerShell:
 ```powershell
 $env:DATABASE_URL="postgres://aigc_flow:aigc_flow_dev@localhost:5432/aigc_flow"
 ```
+
+## Configure Redis / BullMQ
+
+PR-09 adds the first shared Redis package and queue infrastructure for the v2
+worker and admin queue health API.
+
+PowerShell:
+
+```powershell
+$env:REDIS_URL="redis://localhost:6379"
+$env:QUEUE_PREFIX="aigc-flow:v2"
+$env:WORKER_CONCURRENCY="2"
+```
+
+Rules:
+
+- production startup now requires `REDIS_URL`
+- development defaults to `redis://localhost:6379`
+- queue payloads are ID-only and must stay lightweight
+- Redis remains queue / lock / rate-limit / pubsub infrastructure only, not the
+  source of truth
 
 ## Configure `JWT_ACCESS_SECRET`
 
@@ -144,6 +186,22 @@ Current PR-08 limits:
 - workflow / worker integration is not implemented yet
 - billing settlement is not implemented yet
 - AI outputs are not ingested into S3 assets in this phase
+
+## PR-09 queue health endpoint
+
+PR-09 adds:
+
+- `GET /api/v2/admin/queues/health`
+
+This endpoint:
+
+- requires auth
+- requires a tenant context
+- requires `admin:system`
+- returns Redis connection status plus BullMQ counts for each registered queue
+
+The response intentionally does not expose `REDIS_URL`, credentials, or raw
+connection details.
 
 ## Configure S3 / MinIO asset storage
 
@@ -342,6 +400,15 @@ For the storage package itself:
 ```bash
 npm run build --workspace @aigc-flow/storage
 npm run test --workspace @aigc-flow/storage
+```
+
+For the Redis and worker packages added in PR-09:
+
+```bash
+npm run build --workspace @aigc-flow/redis
+npm run test --workspace @aigc-flow/redis
+npm run build --workspace @aigc-flow/worker
+npm run test --workspace @aigc-flow/worker
 ```
 
 ## Tenant-scoped database access

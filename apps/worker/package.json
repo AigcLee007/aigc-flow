@@ -6,6 +6,10 @@
   "scripts": {
     "dev": "tsx watch src/main.ts",
     "build": "tsc -p tsconfig.json",
-    "start": "node dist/main.js"
+    "start": "node dist/main.js",
+    "test": "vitest run --config vitest.config.ts"
+  },
+  "dependencies": {
+    "@aigc-flow/redis": "0.0.0"
   }
 }

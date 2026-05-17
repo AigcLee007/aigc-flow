@@ -83,11 +83,14 @@ export function registerWorkerQueues(options: {
               processNodeExecuteJob(job as never, options.logger, {
                 executionService: options.workflowNodeExecutionService,
               })
-          : queueName === QUEUE_NAMES.providerPoll
-            ? (job: unknown) => processProviderPollJob(job as never, options.logger)
-            : queueName === QUEUE_NAMES.assetIngest
-              ? (job: unknown) => processAssetIngestJob(job as never, options.logger)
-              : (job: unknown) => processBillingSettleJob(job as never, options.logger);
+        : queueName === QUEUE_NAMES.providerPoll
+          ? (job: unknown) =>
+              processProviderPollJob(job as never, options.logger, {
+                executionService: options.workflowNodeExecutionService,
+              })
+        : queueName === QUEUE_NAMES.assetIngest
+          ? (job: unknown) => processAssetIngestJob(job as never, options.logger)
+          : (job: unknown) => processBillingSettleJob(job as never, options.logger);
 
     const worker = options.queueFactory.createWorker(
       queueName,

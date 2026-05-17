@@ -6,6 +6,29 @@ export class RouteResolver {
     routeKey?: string | null;
     routes: ResolvedRoute[];
   }): ResolvedRoute {
+    return this.resolveRoute({
+      errorMessage: "No active text route matched the request",
+      routeKey: options.routeKey,
+      routes: options.routes,
+    });
+  }
+
+  resolveMediaRoute(options: {
+    routeKey?: string | null;
+    routes: ResolvedRoute[];
+  }): ResolvedRoute {
+    return this.resolveRoute({
+      errorMessage: "No active media route matched the request",
+      routeKey: options.routeKey,
+      routes: options.routes,
+    });
+  }
+
+  private resolveRoute(options: {
+    errorMessage: string;
+    routeKey?: string | null;
+    routes: ResolvedRoute[];
+  }): ResolvedRoute {
     const candidates = options.routes.filter(
       (route) => route.status === "active",
     );
@@ -38,7 +61,7 @@ export class RouteResolver {
     if (!selected) {
       throw new AiGatewayError({
         code: "ROUTE_NOT_FOUND",
-        message: "No active text route matched the request",
+        message: options.errorMessage,
         statusCode: 404,
       });
     }

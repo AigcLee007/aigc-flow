@@ -327,4 +327,191 @@ describe("route resolver and ai gateway", () => {
       status: "succeeded",
     });
   });
+
+  test("ai gateway generateImage delegates sync media outputs", async () => {
+    const gateway = new AiGateway({
+      "openai-compatible": {
+        async generateImage() {
+          return {
+            modelKey: "image-test",
+            outputs: [
+              {
+                mimeType: "image/png",
+                url: "https://example.com/generated.png",
+                width: 512,
+              },
+            ],
+            providerRequest: { authorization: "Bearer sk-test-secret" },
+            providerResponse: { data: "ok" },
+            status: "succeeded" as const,
+            usage: {
+              inputTokens: 4,
+              outputTokens: 1,
+              totalTokens: 5,
+            },
+          };
+        },
+      },
+    });
+
+    const result = await gateway.generateImage({
+      apiKey: "sk-test-secret",
+      request: {
+        prompt: "draw a fox",
+      },
+      route: makeRoute(),
+    });
+
+    expect(result).toMatchObject({
+      modelKey: "image-test",
+      outputs: [
+        {
+          mimeType: "image/png",
+          url: "https://example.com/generated.png",
+          width: 512,
+        },
+      ],
+      providerKey: "openai-compatible",
+      status: "succeeded",
+    });
+  });
+
+  test("ai gateway generateVideo delegates async provider task creation", async () => {
+    const gateway = new AiGateway({
+      "openai-compatible": {
+        async generateVideo() {
+          return {
+            modelKey: "video-test",
+            outputs: [],
+            providerRequest: { ok: true },
+            providerResponse: { accepted: true },
+            providerTaskId: "task-123",
+            status: "waiting_provider" as const,
+            usage: {
+              inputTokens: 6,
+              outputTokens: null,
+              totalTokens: 6,
+            },
+          };
+        },
+      },
+    });
+
+    const result = await gateway.generateVideo({
+      apiKey: "sk-test-secret",
+      request: {
+        prompt: "animate a river",
+      },
+      route: makeRoute(),
+    });
+
+    expect(result).toMatchObject({
+      modelKey: "video-test",
+      providerKey: "openai-compatible",
+      providerTaskId: "task-123",
+      status: "waiting_provider",
+    });
+  });
+
+  test("ai gateway pollTask returns pending running succeeded and failed task states", async () => {
+    const pollStates = [
+      { status: "pending" as const },
+      { status: "running" as const },
+      {
+        mimeType: "video/mp4",
+        outputUrls: ["https://example.com/final.mp4"],
+        status: "succeeded" as const,
+      },
+      {
+        error: { code: "PROVIDER_FAILED", message: "provider failed" },
+        status: "failed" as const,
+      },
+    ];
+
+    const gateway = new AiGateway({
+      "openai-compatible": {
+        async pollTask() {
+          return {
+            providerTaskId: "task-123",
+            providerResponse: { ok: true },
+            providerRequest: { ok: true },
+            usage: null,
+            ...pollStates.shift()!,
+          };
+        },
+      },
+    });
+
+    await expect(
+      gateway.pollTask({
+        apiKey: "sk-test-secret",
+        request: {
+          providerTaskId: "task-123",
+        },
+        route: makeRoute(),
+      }),
+    ).resolves.toMatchObject({ status: "pending" });
+    await expect(
+      gateway.pollTask({
+        apiKey: "sk-test-secret",
+        request: {
+          providerTaskId: "task-123",
+        },
+        route: makeRoute(),
+      }),
+    ).resolves.toMatchObject({ status: "running" });
+    await expect(
+      gateway.pollTask({
+        apiKey: "sk-test-secret",
+        request: {
+          providerTaskId: "task-123",
+        },
+        route: makeRoute(),
+      }),
+    ).resolves.toMatchObject({
+      mimeType: "video/mp4",
+      outputUrls: ["https://example.com/final.mp4"],
+      status: "succeeded",
+    });
+    await expect(
+      gateway.pollTask({
+        apiKey: "sk-test-secret",
+        request: {
+          providerTaskId: "task-123",
+        },
+        route: makeRoute(),
+      }),
+    ).resolves.toMatchObject({
+      error: { code: "PROVIDER_FAILED", message: "provider failed" },
+      status: "failed",
+    });
+  });
+
+  test("media request and response redaction still removes secrets", () => {
+    const mediaPayload = {
+      authorization: "Bearer sk-secret-1234",
+      outputBase64: ["c2VjcmV0"],
+      providerResponse: {
+        nested: {
+          token: "sk-secret-1234",
+          url: "https://example.com/result.png?api_key=sk-secret-1234",
+        },
+      },
+      providerTaskId: "task-123",
+    };
+
+    const redacted = redactValue(mediaPayload, ["sk-secret-1234"]) as {
+      authorization: string;
+      providerResponse: {
+        nested: {
+          token: string;
+          url: string;
+        };
+      };
+    };
+
+    expect(redacted.authorization).toBe("[REDACTED]");
+    expect(redacted.providerResponse.nested.token).toBe("[REDACTED]");
+    expect(redacted.providerResponse.nested.url).not.toContain("sk-secret-1234");
+  });
 });

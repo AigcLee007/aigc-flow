@@ -1,15 +1,22 @@
 import { fileURLToPath } from "node:url";
 
-import { CredentialVault, DatabaseTextGenerationRuntime } from "@aigc-flow/ai-gateway-core";
+import {
+  AiGateway,
+  CredentialVault,
+  DatabaseMediaRuntime,
+  DatabaseTextGenerationRuntime,
+  OpenAiCompatibleTextAdapter,
+} from "@aigc-flow/ai-gateway-core";
 import { createPgPool } from "@aigc-flow/db";
 import {
   closeRedisConnection,
   createQueueFactory,
   createRedisConnection,
   QUEUE_NAMES,
-  type NodeExecuteJobPayload,
+  type AnyJobPayload,
   type QueueName,
 } from "@aigc-flow/redis";
+import { S3StorageProvider } from "@aigc-flow/storage";
 import type { Redis } from "ioredis";
 import type { Pool } from "pg";
 
@@ -26,7 +33,7 @@ type QueueFactoryLike = {
   createQueue: (
     name: QueueName,
   ) => {
-    add: (name: string, data: NodeExecuteJobPayload) => Promise<unknown>;
+    add: (name: string, data: AnyJobPayload, options?: { delay?: number }) => Promise<unknown>;
     close: () => Promise<unknown>;
   };
   createQueueEvents: (name: QueueName) => Closable;
@@ -70,13 +77,34 @@ export function createWorkerRuntime(options?: {
     keyVersion: env.credentialKeyVersion,
     masterKey: env.credentialMasterKey,
   });
+  const aiGateway = new AiGateway({
+    openai: new OpenAiCompatibleTextAdapter(),
+    "openai-compatible": new OpenAiCompatibleTextAdapter(),
+  });
   const nodeExecuteQueue = queueFactory.createQueue(QUEUE_NAMES.nodeExecute);
+  const providerPollQueue = queueFactory.createQueue(QUEUE_NAMES.providerPoll);
+  const storageProvider = new S3StorageProvider({
+    accessKeyId: env.s3AccessKeyId,
+    endpoint: env.s3Endpoint,
+    forcePathStyle: env.s3ForcePathStyle,
+    region: env.s3Region,
+    secretAccessKey: env.s3SecretAccessKey,
+  });
   const workflowNodeExecutionService =
     options?.workflowNodeExecutionService ??
     new WorkflowNodeExecutionService({
+      assetBucket: env.s3Bucket,
+      mediaGenerationRuntime: new DatabaseMediaRuntime({
+        aiGateway,
+        credentialVault,
+        pool,
+      }),
       nodeExecuteQueue,
       pool,
+      providerPollQueue,
+      storageProvider,
       textGenerationRuntime: new DatabaseTextGenerationRuntime({
+        aiGateway,
         credentialVault,
         pool,
       }),
@@ -107,7 +135,7 @@ export function createWorkerRuntime(options?: {
 
     await Promise.all(registration.workers.map((worker) => worker.close()));
     await Promise.all(registration.queueEvents.map((queueEvents) => queueEvents.close()));
-    await nodeExecuteQueue.close();
+    await Promise.all([nodeExecuteQueue.close(), providerPollQueue.close()]);
 
     if (ownedRedisConnection) {
       await closeRedisConnection(redisConnection);
@@ -136,6 +164,7 @@ async function main() {
     {
       queueNames: runtime.queueNames,
       queuePrefix: env.queuePrefix,
+      s3Bucket: env.s3Bucket,
       workerConcurrency: env.workerConcurrency,
       workerName: env.workerName,
     },

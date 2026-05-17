@@ -144,6 +144,48 @@ Current PR-11 limits:
 - image/video execution remains deferred to PR-12
 - billing remains out of scope
 
+## PR-12 image/video backend execution foundation
+
+PR-12 extends the backend workflow runner with the first media node execution
+path:
+
+- `image.generate`
+- `video.generate`
+- `provider.poll`
+- workflow media outputs persisted to S3-compatible storage plus `assets`
+  metadata rows
+- `node_runs.output_json` storing `AssetRef` objects only for completed media
+  nodes
+- async provider task state stored as lightweight provider-task metadata only
+
+Current PR-12 behavior:
+
+- `image.generate` and `video.generate` run in the backend worker, not the
+  browser
+- synchronous provider results may return a URL or base64 payload; the worker
+  downloads or decodes the binary, uploads it to S3-compatible storage, and
+  writes an `assets` row with `status=available`
+- asynchronous provider results return a `providerTaskId`; the node transitions
+  to `waiting_provider` and the worker enqueues `provider.poll` with ID-only job
+  payloads
+- `provider.poll` re-enqueues itself with a simple delay while the provider task
+  is still `pending` or `running`
+- when polling succeeds, the worker persists the final media output to
+  S3-compatible storage, updates `node_runs.output_json` to `{ "assets": [...] }`,
+  and unlocks downstream nodes
+- `node_runs.output_json` does not store base64 payloads, binary blobs, or raw
+  provider responses
+
+Current PR-12 limits:
+
+- billing is still not implemented
+- frontend cutover is still deferred
+- tests use mock runtimes, mock HTTP, and fake storage providers; no real
+  external provider is required
+- provider polling uses a minimal fixed delay rather than complex retry/backoff
+- no real OpenAI, Gemini, or third-party provider calls are used in normal
+  tests
+
 ## Configure `DATABASE_URL`
 
 Copy `.env.v2.example` or export the variable directly before running
@@ -170,6 +212,12 @@ PowerShell:
 $env:REDIS_URL="redis://localhost:6379"
 $env:QUEUE_PREFIX="aigc-flow:v2"
 $env:WORKER_CONCURRENCY="2"
+$env:S3_ENDPOINT="http://localhost:9000"
+$env:S3_REGION="us-east-1"
+$env:S3_BUCKET="aigc-flow-dev"
+$env:S3_ACCESS_KEY_ID="minio"
+$env:S3_SECRET_ACCESS_KEY="minio123456"
+$env:S3_FORCE_PATH_STYLE="true"
 ```
 
 Rules:
@@ -179,6 +227,9 @@ Rules:
 - queue payloads are ID-only and must stay lightweight
 - Redis remains queue / lock / rate-limit / pubsub infrastructure only, not the
   source of truth
+- PR-12 also requires the worker to have the same S3 configuration as the API
+  because backend media execution now writes generated outputs into object
+  storage
 
 ## Configure `JWT_ACCESS_SECRET`
 

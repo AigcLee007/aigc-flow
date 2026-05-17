@@ -4,11 +4,19 @@ import type { ProviderPollJobPayload } from "@aigc-flow/redis";
 
 import type { WorkerLogger } from "../logger.js";
 import type { ProcessorResult } from "./shared.js";
+import type { WorkflowNodeExecutionService } from "../workflow-runtime/service.js";
 
 export async function processProviderPollJob(
   job: Job<ProviderPollJobPayload>,
   logger: WorkerLogger,
+  options?: {
+    executionService?: WorkflowNodeExecutionService;
+  },
 ): Promise<ProcessorResult> {
+  if (options?.executionService) {
+    return options.executionService.pollProviderTask(job.data, logger);
+  }
+
   const result: ProcessorResult = {
     jobId: job.id ?? null,
     queueName: job.queueName,

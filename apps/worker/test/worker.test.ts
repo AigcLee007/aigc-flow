@@ -2,16 +2,22 @@ import { randomUUID } from "node:crypto";
 import { afterAll, describe, expect, test, vi } from "vitest";
 
 import { createPgPool, withTenantTransaction } from "@aigc-flow/db";
-import { QUEUE_NAMES, type NodeExecuteJobPayload } from "@aigc-flow/redis";
+import type {
+  AiGatewayMediaResult,
+  ProviderTaskResult,
+} from "@aigc-flow/ai-gateway-core";
+import { QUEUE_NAMES, type NodeExecuteJobPayload, type ProviderPollJobPayload } from "@aigc-flow/redis";
+import type { StorageProvider } from "@aigc-flow/storage";
 
 import type { ApiEnv } from "../../api/src/config/env.js";
 import { buildApp } from "../../api/src/app.js";
 import { WorkflowRunsService } from "../../api/src/modules/workflow-runs/workflow-runs.service.js";
 import { createWorkerRuntime } from "../src/main.js";
 import type { WorkerLogger } from "../src/logger.js";
-import { WORKER_QUEUE_NAMES } from "../src/queues/registry.js";
-import { processWorkflowStartJob } from "../src/processors/workflow-start.processor.js";
 import { processNodeExecuteJob } from "../src/processors/node-execute.processor.js";
+import { processProviderPollJob } from "../src/processors/provider-poll.processor.js";
+import { processWorkflowStartJob } from "../src/processors/workflow-start.processor.js";
+import { WORKER_QUEUE_NAMES } from "../src/queues/registry.js";
 import { WorkflowNodeExecutionService } from "../src/workflow-runtime/service.js";
 import { runMigrations } from "../../../packages/db/src/migrator.js";
 import { hasDatabaseEnv, withDatabase } from "../../../packages/db/test/helpers.js";
@@ -37,13 +43,54 @@ const testEnv: ApiEnv = {
   s3SecretAccessKey: "test-secret",
 };
 
-afterAll(() => {
-  if (originalDatabaseUrl === undefined) {
-    delete process.env.DATABASE_URL;
-  } else {
-    process.env.DATABASE_URL = originalDatabaseUrl;
+class MemoryStorageProvider implements StorageProvider {
+  readonly objects = new Map<string, {
+    body: Buffer;
+    contentType: string | null;
+    metadata: Record<string, string>;
+  }>();
+
+  async putObject(input: {
+    body: Buffer | Uint8Array | string;
+    bucket: string;
+    contentType?: string;
+    key: string;
+    metadata?: Record<string, string>;
+  }): Promise<void> {
+    this.objects.set(`${input.bucket}/${input.key}`, {
+      body: Buffer.isBuffer(input.body) ? input.body : Buffer.from(input.body),
+      contentType: input.contentType ?? null,
+      metadata: input.metadata ?? {},
+    });
   }
-});
+
+  async headObject(input: { bucket: string; key: string }) {
+    const object = this.objects.get(`${input.bucket}/${input.key}`);
+    if (!object) {
+      throw new Error("Object not found");
+    }
+
+    return {
+      contentLength: object.body.byteLength,
+      contentType: object.contentType,
+      eTag: "etag-test",
+      lastModified: new Date().toISOString(),
+      metadata: object.metadata,
+    };
+  }
+
+  async deleteObject(input: { bucket: string; key: string }): Promise<void> {
+    this.objects.delete(`${input.bucket}/${input.key}`);
+  }
+
+  async createPresignedPutUrl() {
+    throw new Error("not used in worker tests");
+  }
+
+  async createPresignedGetUrl() {
+    throw new Error("not used in worker tests");
+  }
+}
 
 function createFakeNodeExecuteQueue() {
   const jobs: Array<{ data: NodeExecuteJobPayload; name: string }> = [];
@@ -53,6 +100,25 @@ function createFakeNodeExecuteQueue() {
       async add(name: string, data: NodeExecuteJobPayload) {
         jobs.push({ data, name });
         return { id: `job-${jobs.length}` };
+      },
+    },
+  };
+}
+
+function createFakeProviderPollQueue() {
+  const jobs: Array<{ data: ProviderPollJobPayload; delay?: number; name: string }> = [];
+  return {
+    jobs,
+    queue: {
+      async add(
+        name: string,
+        data: ProviderPollJobPayload,
+        options?: {
+          delay?: number;
+        },
+      ) {
+        jobs.push({ data, delay: options?.delay, name });
+        return { id: `poll-${jobs.length}` };
       },
     },
   };
@@ -74,8 +140,11 @@ async function seedWorkflowRuntime(
   options?: {
     inputNodeStatus?: string;
     inputOutputJson?: Record<string, unknown> | null;
+    middleNodeConfig?: Record<string, unknown>;
+    middleNodeOutputJson?: Record<string, unknown> | null;
+    middleNodeStatus?: string;
+    middleNodeType?: "text.generate" | "image.generate" | "video.generate";
     outputNodeStatus?: string;
-    textNodeStatus?: string;
     workflowStatus?: string;
   },
 ) {
@@ -86,13 +155,15 @@ async function seedWorkflowRuntime(
   const flowVersionId = randomUUID();
   const workflowRunId = randomUUID();
   const inputNodeRunId = randomUUID();
-  const textNodeRunId = randomUUID();
+  const middleNodeRunId = randomUUID();
   const outputNodeRunId = randomUUID();
+  const middleNodeType = options?.middleNodeType ?? "text.generate";
+  const middleNodeId = middleNodeType.startsWith("video") ? "video" : middleNodeType.startsWith("image") ? "image" : "text";
 
   const compiledGraph = {
     edges: [
-      { source: "input", target: "text" },
-      { source: "text", target: "output" },
+      { source: "input", target: middleNodeId },
+      { source: middleNodeId, target: "output" },
     ],
     entryNodeIds: ["input"],
     nodes: [
@@ -101,23 +172,24 @@ async function seedWorkflowRuntime(
           inputKey: "prompt",
         },
         dependencies: [],
-        dependents: ["text"],
+        dependents: [middleNodeId],
         id: "input",
         type: "input",
       },
       {
-        config: {
-          routeKey: "default-text",
-          systemPrompt: "You are helpful.",
-        },
+        config: options?.middleNodeConfig ?? (
+          middleNodeType === "text.generate"
+            ? { routeKey: "default-text", systemPrompt: "You are helpful." }
+            : { routeKey: "default-media", prompt: "render something" }
+        ),
         dependencies: ["input"],
         dependents: ["output"],
-        id: "text",
-        type: "text.generate",
+        id: middleNodeId,
+        type: middleNodeType,
       },
       {
         config: {},
-        dependencies: ["text"],
+        dependencies: [middleNodeId],
         dependents: [],
         id: "output",
         type: "output",
@@ -248,12 +320,13 @@ async function seedWorkflowRuntime(
           node_type,
           status,
           output_json,
+          provider_task_id,
           updated_at
         )
         VALUES
-          ($1::uuid, $2::uuid, $3::uuid, 'input', 'input', $4, $5::jsonb, now()),
-          ($6::uuid, $2::uuid, $3::uuid, 'text', 'text.generate', $7, NULL, now()),
-          ($8::uuid, $2::uuid, $3::uuid, 'output', 'output', $9, NULL, now())
+          ($1::uuid, $2::uuid, $3::uuid, 'input', 'input', $4, $5::jsonb, NULL, now()),
+          ($6::uuid, $2::uuid, $3::uuid, $7, $8, $9, $10::jsonb, $11, now()),
+          ($12::uuid, $2::uuid, $3::uuid, 'output', 'output', $13, NULL, NULL, now())
       `,
       [
         inputNodeRunId,
@@ -261,8 +334,14 @@ async function seedWorkflowRuntime(
         workflowRunId,
         options?.inputNodeStatus ?? "runnable",
         options?.inputOutputJson ? JSON.stringify(options.inputOutputJson) : null,
-        textNodeRunId,
-        options?.textNodeStatus ?? "pending",
+        middleNodeRunId,
+        middleNodeId,
+        middleNodeType,
+        options?.middleNodeStatus ?? "pending",
+        options?.middleNodeOutputJson ? JSON.stringify(options.middleNodeOutputJson) : null,
+        options?.middleNodeOutputJson && isProviderTaskJson(options.middleNodeOutputJson)
+          ? String(options.middleNodeOutputJson.providerTask.providerTaskId)
+          : null,
         outputNodeRunId,
         options?.outputNodeStatus ?? "pending",
       ],
@@ -280,14 +359,106 @@ async function seedWorkflowRuntime(
     flowId,
     flowVersionId,
     inputNodeRunId,
+    middleNodeId,
+    middleNodeRunId,
+    middleNodeType,
     outputNodeRunId,
     projectId,
     tenantId,
-    textNodeRunId,
     userId,
     workflowRunId,
   };
 }
+
+function isProviderTaskJson(value: Record<string, unknown>): value is {
+  providerTask: {
+    providerTaskId: string;
+  };
+} {
+  return typeof value.providerTask === "object" &&
+    value.providerTask !== null &&
+    "providerTaskId" in value.providerTask;
+}
+
+function createWorkflowService(options: {
+  fetchFn?: (url: string) => Promise<{
+    arrayBuffer(): Promise<ArrayBuffer>;
+    headers: { get(name: string): string | null };
+    ok: boolean;
+    status: number;
+  }>;
+  mediaGenerationRuntime?: {
+    generateImage: (context: { tenantId: string; userId: string | null }, request: unknown, metadata?: unknown) => Promise<AiGatewayMediaResult>;
+    generateVideo: (context: { tenantId: string; userId: string | null }, request: unknown, metadata?: unknown) => Promise<AiGatewayMediaResult>;
+    pollTask: (context: { tenantId: string; userId: string | null }, modality: "image" | "video", request: unknown, metadata?: unknown) => Promise<ProviderTaskResult>;
+  };
+  nodeQueue: ReturnType<typeof createFakeNodeExecuteQueue>;
+  pool: ReturnType<typeof createPgPool>;
+  pollQueue: ReturnType<typeof createFakeProviderPollQueue>;
+  storageProvider: StorageProvider;
+  textGenerationRuntime?: {
+    generateText: (context: { tenantId: string; userId: string | null }, request: unknown, metadata?: unknown) => Promise<AiGatewayTextResultLike>;
+  };
+}) {
+  return new WorkflowNodeExecutionService({
+    assetBucket: "test-bucket",
+    fetchFn: options.fetchFn,
+    mediaGenerationRuntime: options.mediaGenerationRuntime ?? {
+      async generateImage() {
+        throw new Error("generateImage not mocked");
+      },
+      async generateVideo() {
+        throw new Error("generateVideo not mocked");
+      },
+      async pollTask() {
+        throw new Error("pollTask not mocked");
+      },
+    },
+    nodeExecuteQueue: options.nodeQueue.queue,
+    pool: options.pool,
+    providerPollQueue: options.pollQueue.queue,
+    storageProvider: options.storageProvider,
+    textGenerationRuntime: options.textGenerationRuntime ?? {
+      async generateText() {
+        return {
+          modelKey: "mock-model",
+          outputText: "generated text",
+          providerKey: "mock-provider",
+          providerRequest: {},
+          providerResponse: {},
+          status: "succeeded" as const,
+          usage: {
+            inputTokens: 2,
+            outputTokens: 3,
+            totalTokens: 5,
+          },
+        };
+      },
+    },
+  });
+}
+
+type AiGatewayTextResultLike = {
+  modelKey: string;
+  outputText: string;
+  providerKey: string;
+  providerRequest: unknown;
+  providerResponse: unknown;
+  status: "succeeded";
+  usage: {
+    inputTokens: number | null;
+    outputTokens: number | null;
+    totalTokens: number | null;
+  };
+};
+
+afterAll(() => {
+  if (originalDatabaseUrl === undefined) {
+    delete process.env.DATABASE_URL;
+  } else {
+    process.env.DATABASE_URL = originalDatabaseUrl;
+  }
+});
 
 describe("worker skeleton", () => {
   test("registers the expected queue names", () => {
@@ -303,6 +474,12 @@ describe("worker skeleton", () => {
         nodeEnv: "test",
         queuePrefix: "test-prefix",
         redisUrl: "redis://localhost:6379",
+        s3AccessKeyId: "test-access",
+        s3Bucket: "test-bucket",
+        s3Endpoint: "http://localhost:9000",
+        s3ForcePathStyle: true,
+        s3Region: "us-east-1",
+        s3SecretAccessKey: "test-secret",
         workerConcurrency: 2,
         workerName: "test-worker",
       },
@@ -327,6 +504,7 @@ describe("worker skeleton", () => {
 
     expect(runtime.queueNames).toEqual([...WORKER_QUEUE_NAMES]);
     expect(createdQueues).toContain(`worker:${QUEUE_NAMES.nodeExecute}`);
+    expect(createdQueues).toContain(`worker:${QUEUE_NAMES.providerPoll}`);
   });
 
   test("processor skeleton returns a no-op result with tenantId and traceId", async () => {
@@ -364,6 +542,12 @@ describe("worker skeleton", () => {
         nodeEnv: "test",
         queuePrefix: "test-prefix",
         redisUrl: "redis://localhost:6379",
+        s3AccessKeyId: "test-access",
+        s3Bucket: "test-bucket",
+        s3Endpoint: "http://localhost:9000",
+        s3ForcePathStyle: true,
+        s3Region: "us-east-1",
+        s3SecretAccessKey: "test-secret",
         workerConcurrency: 2,
         workerName: "test-worker",
       },
@@ -387,7 +571,7 @@ describe("worker skeleton", () => {
 
     expect(workerClose).toHaveBeenCalledTimes(WORKER_QUEUE_NAMES.length);
     expect(eventsClose).toHaveBeenCalledTimes(WORKER_QUEUE_NAMES.length);
-    expect(queueClose).toHaveBeenCalledTimes(1);
+    expect(queueClose).toHaveBeenCalledTimes(2);
   });
 });
 
@@ -405,27 +589,13 @@ describeWithDatabase("workflow node execution", () => {
         });
 
         const seeded = await seedWorkflowRuntime(appPool);
-        const fakeQueue = createFakeNodeExecuteQueue();
-        const service = new WorkflowNodeExecutionService({
-          nodeExecuteQueue: fakeQueue.queue,
+        const nodeQueue = createFakeNodeExecuteQueue();
+        const pollQueue = createFakeProviderPollQueue();
+        const service = createWorkflowService({
+          nodeQueue,
+          pollQueue,
           pool: appPool,
-          textGenerationRuntime: {
-            async generateText() {
-              return {
-                modelKey: "mock-model",
-                outputText: "hello",
-                providerKey: "mock-provider",
-                providerRequest: {},
-                providerResponse: {},
-                status: "succeeded" as const,
-                usage: {
-                  inputTokens: 1,
-                  outputTokens: 1,
-                  totalTokens: 2,
-                },
-              };
-            },
-          },
+          storageProvider: new MemoryStorageProvider(),
         });
 
         await processNodeExecuteJob(
@@ -450,13 +620,13 @@ describeWithDatabase("workflow node execution", () => {
               "SELECT status, output_json FROM node_runs WHERE id = $1::uuid",
               [seeded.inputNodeRunId],
             );
-            const textNode = await client.query<{ id: string; status: string }>(
+            const nextNode = await client.query<{ id: string; status: string }>(
               "SELECT id::text AS id, status FROM node_runs WHERE id = $1::uuid",
-              [seeded.textNodeRunId],
+              [seeded.middleNodeRunId],
             );
             return {
               inputNode: inputNode.rows[0],
-              textNode: textNode.rows[0],
+              nextNode: nextNode.rows[0],
             };
           },
           appPool,
@@ -464,9 +634,9 @@ describeWithDatabase("workflow node execution", () => {
 
         expect(result.inputNode.status).toBe("succeeded");
         expect(result.inputNode.output_json).toEqual({ prompt: "hello worker" });
-        expect(result.textNode.status).toBe("runnable");
-        expect(fakeQueue.jobs).toHaveLength(1);
-        expect(Object.keys(fakeQueue.jobs[0].data).sort()).toEqual([
+        expect(result.nextNode.status).toBe("runnable");
+        expect(nodeQueue.jobs).toHaveLength(1);
+        expect(Object.keys(nodeQueue.jobs[0].data).sort()).toEqual([
           "nodeRunId",
           "tenantId",
           "traceId",
@@ -494,7 +664,7 @@ describeWithDatabase("workflow node execution", () => {
         const seeded = await seedWorkflowRuntime(appPool, {
           inputNodeStatus: "succeeded",
           inputOutputJson: { prompt: "hello from upstream" },
-          textNodeStatus: "runnable",
+          middleNodeStatus: "runnable",
         });
         const generateText = vi.fn(async () => ({
           modelKey: "mock-model",
@@ -510,9 +680,11 @@ describeWithDatabase("workflow node execution", () => {
           },
         }));
 
-        const service = new WorkflowNodeExecutionService({
-          nodeExecuteQueue: createFakeNodeExecuteQueue().queue,
+        const service = createWorkflowService({
+          nodeQueue: createFakeNodeExecuteQueue(),
+          pollQueue: createFakeProviderPollQueue(),
           pool: appPool,
+          storageProvider: new MemoryStorageProvider(),
           textGenerationRuntime: {
             generateText,
           },
@@ -521,7 +693,7 @@ describeWithDatabase("workflow node execution", () => {
         await processNodeExecuteJob(
           {
             data: {
-              nodeRunId: seeded.textNodeRunId,
+              nodeRunId: seeded.middleNodeRunId,
               tenantId: seeded.tenantId,
               traceId: "trace-text",
               workflowRunId: seeded.workflowRunId,
@@ -539,7 +711,7 @@ describeWithDatabase("workflow node execution", () => {
           async (client) => {
             const result = await client.query<{ status: string; output_json: Record<string, unknown> }>(
               "SELECT status, output_json FROM node_runs WHERE id = $1::uuid",
-              [seeded.textNodeRunId],
+              [seeded.middleNodeRunId],
             );
             return result.rows[0];
           },
@@ -555,7 +727,7 @@ describeWithDatabase("workflow node execution", () => {
     });
   });
 
-  test("output node finalizes workflow run", async () => {
+  test("image.generate sync result creates asset rows and stores AssetRef only", async () => {
     await withDatabase(async ({ createAppDatabaseUrl, databaseUrl }) => {
       process.env.DATABASE_URL = databaseUrl;
       const adminPool = createPgPool();
@@ -569,65 +741,113 @@ describeWithDatabase("workflow node execution", () => {
 
         const seeded = await seedWorkflowRuntime(appPool, {
           inputNodeStatus: "succeeded",
-          inputOutputJson: { prompt: "hello from upstream" },
-          outputNodeStatus: "runnable",
-          textNodeStatus: "succeeded",
-        });
-
-        await withTenantTransaction(
-          { tenantId: seeded.tenantId, userId: seeded.userId },
-          async (client) => {
-            await client.query(
-              `
-                UPDATE node_runs
-                SET output_json = $2::jsonb
-                WHERE id = $1::uuid
-              `,
-              [seeded.textNodeRunId, JSON.stringify({ text: "final text" })],
-            );
+          inputOutputJson: { prompt: "draw a sunrise" },
+          middleNodeConfig: {
+            prompt: "fallback prompt",
+            routeKey: "default-image",
           },
-          appPool,
-        );
-
-        const service = new WorkflowNodeExecutionService({
-          nodeExecuteQueue: createFakeNodeExecuteQueue().queue,
-          pool: appPool,
-          textGenerationRuntime: {
-            async generateText() {
-              throw new Error("should not be called");
+          middleNodeStatus: "runnable",
+          middleNodeType: "image.generate",
+        });
+        const nodeQueue = createFakeNodeExecuteQueue();
+        const pollQueue = createFakeProviderPollQueue();
+        const storageProvider = new MemoryStorageProvider();
+        const service = createWorkflowService({
+          mediaGenerationRuntime: {
+            async generateImage() {
+              return {
+                modelKey: "image-model",
+                outputs: [
+                  {
+                    base64: Buffer.from("fake image bytes").toString("base64"),
+                    mimeType: "image/png",
+                    width: 512,
+                  },
+                ],
+                providerKey: "mock-provider",
+                providerRequest: { prompt: "draw a sunrise" },
+                providerResponse: { accepted: true },
+                status: "succeeded",
+                usage: {
+                  inputTokens: 5,
+                  outputTokens: 1,
+                  totalTokens: 6,
+                },
+              };
+            },
+            async generateVideo() {
+              throw new Error("not used");
+            },
+            async pollTask() {
+              throw new Error("not used");
             },
           },
+          nodeQueue,
+          pollQueue,
+          pool: appPool,
+          storageProvider,
         });
 
         await processNodeExecuteJob(
           {
             data: {
-              nodeRunId: seeded.outputNodeRunId,
+              nodeRunId: seeded.middleNodeRunId,
               tenantId: seeded.tenantId,
-              traceId: "trace-output",
+              traceId: "trace-image",
               workflowRunId: seeded.workflowRunId,
             },
-            id: "job-output",
+            id: "job-image",
             queueName: QUEUE_NAMES.nodeExecute,
           } as never,
           createTestLogger(),
           { executionService: service },
         );
 
-        const workflowRun = await withTenantTransaction(
+        const state = await withTenantTransaction(
           { tenantId: seeded.tenantId, userId: seeded.userId },
           async (client) => {
-            const result = await client.query<{ status: string; output_json: Record<string, unknown> }>(
-              "SELECT status, output_json FROM workflow_runs WHERE id = $1::uuid",
+            const nodeRun = await client.query<{ status: string; output_json: Record<string, unknown> }>(
+              "SELECT status, output_json FROM node_runs WHERE id = $1::uuid",
+              [seeded.middleNodeRunId],
+            );
+            const asset = await client.query<{ kind: string; status: string; workflow_run_id: string; node_run_id: string }>(
+              "SELECT kind, status, workflow_run_id::text AS workflow_run_id, node_run_id::text AS node_run_id FROM assets WHERE workflow_run_id = $1::uuid",
               [seeded.workflowRunId],
             );
-            return result.rows[0];
+            const outputNode = await client.query<{ status: string }>(
+              "SELECT status FROM node_runs WHERE id = $1::uuid",
+              [seeded.outputNodeRunId],
+            );
+            return {
+              asset: asset.rows[0],
+              nodeRun: nodeRun.rows[0],
+              outputNode: outputNode.rows[0],
+            };
           },
           appPool,
         );
 
-        expect(workflowRun.status).toBe("succeeded");
-        expect(workflowRun.output_json).toEqual({ text: "final text" });
+        expect(state.nodeRun.status).toBe("succeeded");
+        expect(state.nodeRun.output_json).toEqual({
+          assets: [
+            expect.objectContaining({
+              assetId: expect.any(String),
+              kind: "image",
+              mimeType: "image/png",
+              width: 512,
+            }),
+          ],
+        });
+        expect(JSON.stringify(state.nodeRun.output_json)).not.toContain("base64");
+        expect(state.asset).toMatchObject({
+          kind: "image",
+          node_run_id: seeded.middleNodeRunId,
+          status: "available",
+          workflow_run_id: seeded.workflowRunId,
+        });
+        expect(storageProvider.objects.size).toBe(1);
+        expect(state.outputNode.status).toBe("runnable");
+        expect(pollQueue.jobs).toHaveLength(0);
       } finally {
         await appPool.end();
         await adminPool.end();
@@ -635,7 +855,7 @@ describeWithDatabase("workflow node execution", () => {
     });
   });
 
-  test("failed text.generate marks node and workflow failed", async () => {
+  test("video.generate async result marks node waiting_provider and enqueues provider.poll with ID-only payload", async () => {
     await withDatabase(async ({ createAppDatabaseUrl, databaseUrl }) => {
       process.env.DATABASE_URL = databaseUrl;
       const adminPool = createPgPool();
@@ -649,43 +869,387 @@ describeWithDatabase("workflow node execution", () => {
 
         const seeded = await seedWorkflowRuntime(appPool, {
           inputNodeStatus: "succeeded",
-          inputOutputJson: { prompt: "hello from upstream" },
-          textNodeStatus: "runnable",
+          inputOutputJson: { prompt: "animate a river" },
+          middleNodeStatus: "runnable",
+          middleNodeType: "video.generate",
         });
-
-        const service = new WorkflowNodeExecutionService({
-          nodeExecuteQueue: createFakeNodeExecuteQueue().queue,
-          pool: appPool,
-          textGenerationRuntime: {
-            async generateText() {
-              throw new Error("mock generation failure");
+        const nodeQueue = createFakeNodeExecuteQueue();
+        const pollQueue = createFakeProviderPollQueue();
+        const service = createWorkflowService({
+          mediaGenerationRuntime: {
+            async generateImage() {
+              throw new Error("not used");
+            },
+            async generateVideo() {
+              return {
+                modelKey: "video-model",
+                outputs: [],
+                providerKey: "mock-provider",
+                providerRequest: { prompt: "animate a river" },
+                providerResponse: { accepted: true },
+                providerTaskId: "task-video-1",
+                status: "waiting_provider",
+                usage: {
+                  inputTokens: 6,
+                  outputTokens: null,
+                  totalTokens: 6,
+                },
+              };
+            },
+            async pollTask() {
+              throw new Error("not used");
             },
           },
+          nodeQueue,
+          pollQueue,
+          pool: appPool,
+          storageProvider: new MemoryStorageProvider(),
+        });
+
+        await processNodeExecuteJob(
+          {
+            data: {
+              nodeRunId: seeded.middleNodeRunId,
+              tenantId: seeded.tenantId,
+              traceId: "trace-video",
+              workflowRunId: seeded.workflowRunId,
+            },
+            id: "job-video",
+            queueName: QUEUE_NAMES.nodeExecute,
+          } as never,
+          createTestLogger(),
+          { executionService: service },
+        );
+
+        const nodeRun = await withTenantTransaction(
+          { tenantId: seeded.tenantId, userId: seeded.userId },
+          async (client) => {
+            const result = await client.query<{ provider_task_id: string; status: string; output_json: Record<string, unknown> }>(
+              "SELECT status, provider_task_id, output_json FROM node_runs WHERE id = $1::uuid",
+              [seeded.middleNodeRunId],
+            );
+            return result.rows[0];
+          },
+          appPool,
+        );
+
+        expect(nodeRun.status).toBe("waiting_provider");
+        expect(nodeRun.provider_task_id).toBe("task-video-1");
+        expect(nodeRun.output_json).toEqual({
+          providerTask: {
+            modelKey: "video-model",
+            providerKey: "mock-provider",
+            providerTaskId: "task-video-1",
+            routeId: null,
+            routeKey: "default-media",
+            status: "waiting_provider",
+          },
+        });
+        expect(pollQueue.jobs).toHaveLength(1);
+        expect(pollQueue.jobs[0]).toMatchObject({
+          data: {
+            nodeRunId: seeded.middleNodeRunId,
+            providerTaskId: "task-video-1",
+            tenantId: seeded.tenantId,
+            traceId: "trace-video",
+            workflowRunId: seeded.workflowRunId,
+          },
+        });
+        expect(Object.keys(pollQueue.jobs[0].data).sort()).toEqual([
+          "nodeRunId",
+          "providerTaskId",
+          "tenantId",
+          "traceId",
+          "workflowRunId",
+        ]);
+      } finally {
+        await appPool.end();
+        await adminPool.end();
+      }
+    });
+  });
+
+  test("provider.poll pending re-enqueues without storing payload blobs", async () => {
+    await withDatabase(async ({ createAppDatabaseUrl, databaseUrl }) => {
+      process.env.DATABASE_URL = databaseUrl;
+      const adminPool = createPgPool();
+      let appPool = createPgPool();
+
+      try {
+        await runMigrations(adminPool);
+        appPool = createPgPool({
+          connectionString: await createAppDatabaseUrl(),
+        });
+
+        const seeded = await seedWorkflowRuntime(appPool, {
+          inputNodeStatus: "succeeded",
+          middleNodeOutputJson: {
+            providerTask: {
+              modelKey: "video-model",
+              providerKey: "mock-provider",
+              providerTaskId: "task-pending",
+              routeId: "route-1",
+              routeKey: "default-media",
+              status: "waiting_provider",
+            },
+          },
+          middleNodeStatus: "waiting_provider",
+          middleNodeType: "video.generate",
+        });
+        const pollQueue = createFakeProviderPollQueue();
+        const service = createWorkflowService({
+          mediaGenerationRuntime: {
+            async generateImage() {
+              throw new Error("not used");
+            },
+            async generateVideo() {
+              throw new Error("not used");
+            },
+            async pollTask() {
+              return {
+                providerTaskId: "task-pending",
+                providerRequest: {},
+                providerResponse: {},
+                status: "pending",
+                usage: null,
+              };
+            },
+          },
+          nodeQueue: createFakeNodeExecuteQueue(),
+          pollQueue,
+          pool: appPool,
+          storageProvider: new MemoryStorageProvider(),
+        });
+
+        await processProviderPollJob(
+          {
+            data: {
+              nodeRunId: seeded.middleNodeRunId,
+              providerTaskId: "task-pending",
+              tenantId: seeded.tenantId,
+              traceId: "trace-pending",
+              workflowRunId: seeded.workflowRunId,
+            },
+            id: "job-pending",
+            queueName: QUEUE_NAMES.providerPoll,
+          } as never,
+          createTestLogger(),
+          { executionService: service },
+        );
+
+        const nodeRun = await withTenantTransaction(
+          { tenantId: seeded.tenantId, userId: seeded.userId },
+          async (client) => {
+            const result = await client.query<{ status: string; output_json: Record<string, unknown> }>(
+              "SELECT status, output_json FROM node_runs WHERE id = $1::uuid",
+              [seeded.middleNodeRunId],
+            );
+            return result.rows[0];
+          },
+          appPool,
+        );
+
+        expect(nodeRun.status).toBe("waiting_provider");
+        expect(nodeRun.output_json.providerTask).toMatchObject({
+          providerTaskId: "task-pending",
+          status: "pending",
+        });
+        expect(JSON.stringify(nodeRun.output_json)).not.toContain("base64");
+        expect(pollQueue.jobs).toHaveLength(1);
+        expect(pollQueue.jobs[0].delay).toBeGreaterThan(0);
+      } finally {
+        await appPool.end();
+        await adminPool.end();
+      }
+    });
+  });
+
+  test("provider.poll succeeded creates asset, marks node succeeded, and unlocks downstream", async () => {
+    await withDatabase(async ({ createAppDatabaseUrl, databaseUrl }) => {
+      process.env.DATABASE_URL = databaseUrl;
+      const adminPool = createPgPool();
+      let appPool = createPgPool();
+
+      try {
+        await runMigrations(adminPool);
+        appPool = createPgPool({
+          connectionString: await createAppDatabaseUrl(),
+        });
+
+        const seeded = await seedWorkflowRuntime(appPool, {
+          inputNodeStatus: "succeeded",
+          middleNodeOutputJson: {
+            providerTask: {
+              modelKey: "video-model",
+              providerKey: "mock-provider",
+              providerTaskId: "task-success",
+              routeId: "route-1",
+              routeKey: "default-media",
+              status: "waiting_provider",
+            },
+          },
+          middleNodeStatus: "waiting_provider",
+          middleNodeType: "video.generate",
+        });
+        const nodeQueue = createFakeNodeExecuteQueue();
+        const service = createWorkflowService({
+          mediaGenerationRuntime: {
+            async generateImage() {
+              throw new Error("not used");
+            },
+            async generateVideo() {
+              throw new Error("not used");
+            },
+            async pollTask() {
+              return {
+                mimeType: "video/mp4",
+                outputBase64: [Buffer.from("fake video bytes").toString("base64")],
+                providerRequest: {},
+                providerResponse: {},
+                providerTaskId: "task-success",
+                status: "succeeded",
+                usage: null,
+              };
+            },
+          },
+          nodeQueue,
+          pollQueue: createFakeProviderPollQueue(),
+          pool: appPool,
+          storageProvider: new MemoryStorageProvider(),
+        });
+
+        await processProviderPollJob(
+          {
+            data: {
+              nodeRunId: seeded.middleNodeRunId,
+              providerTaskId: "task-success",
+              tenantId: seeded.tenantId,
+              traceId: "trace-success",
+              workflowRunId: seeded.workflowRunId,
+            },
+            id: "job-success",
+            queueName: QUEUE_NAMES.providerPoll,
+          } as never,
+          createTestLogger(),
+          { executionService: service },
+        );
+
+        const state = await withTenantTransaction(
+          { tenantId: seeded.tenantId, userId: seeded.userId },
+          async (client) => {
+            const nodeRun = await client.query<{ status: string; output_json: Record<string, unknown> }>(
+              "SELECT status, output_json FROM node_runs WHERE id = $1::uuid",
+              [seeded.middleNodeRunId],
+            );
+            const outputNode = await client.query<{ status: string }>(
+              "SELECT status FROM node_runs WHERE id = $1::uuid",
+              [seeded.outputNodeRunId],
+            );
+            const assets = await client.query<{ count: number }>(
+              "SELECT COUNT(*)::int AS count FROM assets WHERE workflow_run_id = $1::uuid",
+              [seeded.workflowRunId],
+            );
+            return {
+              assets: assets.rows[0]?.count ?? 0,
+              nodeRun: nodeRun.rows[0],
+              outputNode: outputNode.rows[0],
+            };
+          },
+          appPool,
+        );
+
+        expect(state.nodeRun.status).toBe("succeeded");
+        expect(state.nodeRun.output_json.assets).toHaveLength(1);
+        expect(JSON.stringify(state.nodeRun.output_json)).not.toContain("base64");
+        expect(state.outputNode.status).toBe("runnable");
+        expect(state.assets).toBe(1);
+        expect(nodeQueue.jobs).toHaveLength(1);
+      } finally {
+        await appPool.end();
+        await adminPool.end();
+      }
+    });
+  });
+
+  test("provider.poll failed marks node and workflow failed", async () => {
+    await withDatabase(async ({ createAppDatabaseUrl, databaseUrl }) => {
+      process.env.DATABASE_URL = databaseUrl;
+      const adminPool = createPgPool();
+      let appPool = createPgPool();
+
+      try {
+        await runMigrations(adminPool);
+        appPool = createPgPool({
+          connectionString: await createAppDatabaseUrl(),
+        });
+
+        const seeded = await seedWorkflowRuntime(appPool, {
+          inputNodeStatus: "succeeded",
+          middleNodeOutputJson: {
+            providerTask: {
+              modelKey: "video-model",
+              providerKey: "mock-provider",
+              providerTaskId: "task-failed",
+              routeId: "route-1",
+              routeKey: "default-media",
+              status: "waiting_provider",
+            },
+          },
+          middleNodeStatus: "waiting_provider",
+          middleNodeType: "video.generate",
+        });
+        const service = createWorkflowService({
+          mediaGenerationRuntime: {
+            async generateImage() {
+              throw new Error("not used");
+            },
+            async generateVideo() {
+              throw new Error("not used");
+            },
+            async pollTask() {
+              return {
+                error: {
+                  code: "PROVIDER_FAILED",
+                  message: "provider failed",
+                },
+                providerRequest: {},
+                providerResponse: {},
+                providerTaskId: "task-failed",
+                status: "failed",
+                usage: null,
+              };
+            },
+          },
+          nodeQueue: createFakeNodeExecuteQueue(),
+          pollQueue: createFakeProviderPollQueue(),
+          pool: appPool,
+          storageProvider: new MemoryStorageProvider(),
         });
 
         await expect(
-          processNodeExecuteJob(
+          processProviderPollJob(
             {
               data: {
-                nodeRunId: seeded.textNodeRunId,
+                nodeRunId: seeded.middleNodeRunId,
+                providerTaskId: "task-failed",
                 tenantId: seeded.tenantId,
                 traceId: "trace-failed",
                 workflowRunId: seeded.workflowRunId,
               },
               id: "job-failed",
-              queueName: QUEUE_NAMES.nodeExecute,
+              queueName: QUEUE_NAMES.providerPoll,
             } as never,
             createTestLogger(),
             { executionService: service },
           ),
-        ).rejects.toThrow("mock generation failure");
+        ).rejects.toThrow("provider failed");
 
         const state = await withTenantTransaction(
           { tenantId: seeded.tenantId, userId: seeded.userId },
           async (client) => {
             const nodeRun = await client.query<{ status: string; error_json: Record<string, unknown> }>(
               "SELECT status, error_json FROM node_runs WHERE id = $1::uuid",
-              [seeded.textNodeRunId],
+              [seeded.middleNodeRunId],
             );
             const workflowRun = await client.query<{ status: string; error_json: Record<string, unknown> }>(
               "SELECT status, error_json FROM workflow_runs WHERE id = $1::uuid",
@@ -701,7 +1265,7 @@ describeWithDatabase("workflow node execution", () => {
 
         expect(state.nodeRun.status).toBe("failed");
         expect(state.workflowRun.status).toBe("failed");
-        expect(state.nodeRun.error_json.message).toBe("mock generation failure");
+        expect(state.nodeRun.error_json.message).toBe("provider failed");
       } finally {
         await appPool.end();
         await adminPool.end();
@@ -709,7 +1273,7 @@ describeWithDatabase("workflow node execution", () => {
     });
   });
 
-  test("integration harness executes input -> text.generate -> output to success", async () => {
+  test("integration harness executes input -> image.generate -> output to success", async () => {
     await withDatabase(async ({ createAppDatabaseUrl, databaseUrl }) => {
       process.env.DATABASE_URL = databaseUrl;
       const adminPool = createPgPool();
@@ -726,6 +1290,11 @@ describeWithDatabase("workflow node execution", () => {
           env: testEnv,
           logger: false,
           pool: appPool,
+          queueHealthService: {
+            async close() {
+              return;
+            },
+          } as never,
           workflowRunsService: new WorkflowRunsService({
             nodeExecuteQueue: fakeQueue.queue,
             pool: appPool,
@@ -772,12 +1341,12 @@ describeWithDatabase("workflow node execution", () => {
           payload: {
             graph: {
               edges: [
-                { source: "input", target: "text" },
-                { source: "text", target: "output" },
+                { source: "input", target: "image" },
+                { source: "image", target: "output" },
               ],
               nodes: [
                 { id: "input", type: "input", data: { inputKey: "prompt" } },
-                { id: "text", type: "text.generate", data: { routeKey: "default-text" } },
+                { id: "image", type: "image.generate", data: { routeKey: "default-media" } },
                 { id: "output", type: "output" },
               ],
             },
@@ -793,33 +1362,47 @@ describeWithDatabase("workflow node execution", () => {
           method: "POST",
           payload: {
             input: {
-              prompt: "integration hello",
+              prompt: "integration image",
             },
           },
           url: `/api/v2/flows/${flow.json().id}/runs`,
         });
         expect(createRun.statusCode).toBe(201);
 
-        const workerService = new WorkflowNodeExecutionService({
-          nodeExecuteQueue: fakeQueue.queue,
-          pool: appPool,
-          textGenerationRuntime: {
-            async generateText() {
+        const workerService = createWorkflowService({
+          mediaGenerationRuntime: {
+            async generateImage() {
               return {
-                modelKey: "mock-model",
-                outputText: "integration result",
+                modelKey: "image-model",
+                outputs: [
+                  {
+                    base64: Buffer.from("integration image bytes").toString("base64"),
+                    mimeType: "image/png",
+                    width: 256,
+                  },
+                ],
                 providerKey: "mock-provider",
                 providerRequest: {},
                 providerResponse: {},
-                status: "succeeded" as const,
+                status: "succeeded",
                 usage: {
                   inputTokens: 2,
-                  outputTokens: 2,
-                  totalTokens: 4,
+                  outputTokens: 1,
+                  totalTokens: 3,
                 },
               };
             },
+            async generateVideo() {
+              throw new Error("not used");
+            },
+            async pollTask() {
+              throw new Error("not used");
+            },
           },
+          nodeQueue: fakeQueue,
+          pollQueue: createFakeProviderPollQueue(),
+          pool: appPool,
+          storageProvider: new MemoryStorageProvider(),
         });
 
         for (let index = 0; index < 10 && fakeQueue.jobs.length > 0; index += 1) {
@@ -847,17 +1430,12 @@ describeWithDatabase("workflow node execution", () => {
         });
         expect(runState.statusCode).toBe(200);
         expect(runState.json().workflowRun.status).toBe("succeeded");
-        expect(runState.json().workflowRun.outputJson.text).toBe("integration result");
-
-        const events = await api.inject({
-          headers: {
-            authorization: `Bearer ${owner.accessToken}`,
-          },
-          method: "GET",
-          url: `/api/v2/workflow-runs/${createRun.json().runId}/events`,
+        expect(runState.json().workflowRun.outputJson.assets).toHaveLength(1);
+        expect(runState.json().workflowRun.outputJson.assets[0]).toMatchObject({
+          kind: "image",
+          mimeType: "image/png",
+          width: 256,
         });
-        const sequences = events.json().map((row: { sequence: number }) => row.sequence);
-        expect(sequences).toEqual([...sequences].sort((a, b) => a - b));
 
         await api.close();
       } finally {

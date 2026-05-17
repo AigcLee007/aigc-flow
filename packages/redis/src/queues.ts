@@ -40,9 +40,9 @@ export type NodeExecuteJobPayload = BaseJobPayload & {
 };
 
 export type ProviderPollJobPayload = BaseJobPayload & {
-  nodeRunId?: string;
+  nodeRunId: string;
   providerTaskId: string;
-  workflowRunId?: string;
+  workflowRunId: string;
 };
 
 export type AssetIngestJobPayload = BaseJobPayload & {

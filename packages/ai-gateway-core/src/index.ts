@@ -1,4 +1,5 @@
 export { AiGateway } from "./ai-gateway.js";
+export { DatabaseMediaRuntime } from "./database-media-runtime.js";
 export { DatabaseTextGenerationRuntime } from "./database-text-runtime.js";
 export {
   AiGatewayError,
@@ -18,11 +19,19 @@ export type { ProviderAdapter } from "./provider-adapter.js";
 export { redactString, redactValue } from "./redaction.js";
 export { RouteResolver } from "./route-resolver.js";
 export type {
+  AiGatewayMediaResult,
   AiGatewayTextResult,
   AiGatewayUsage,
+  AssetReferenceInput,
+  ImageGenerationRequest,
+  MediaOutput,
+  PollTaskRequest,
   ProviderCallContext,
+  ProviderMediaGenerationResult,
+  ProviderTaskResult,
   ProviderTextGenerationResult,
   ResolvedRoute,
   TextGenerationRequest,
   TextMessage,
+  VideoGenerationRequest,
 } from "./types.js";
